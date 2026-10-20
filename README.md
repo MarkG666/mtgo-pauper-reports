@@ -1,0 +1,1 @@
+# mtgo-pauper-reports
