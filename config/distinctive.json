@@ -1,0 +1,7 @@
+{
+  "window_days": 14,
+  "widen_days": 28,
+  "min_archetype_lists": 3,
+  "comment": "同アーキ比較: 直近 window_days（JST）のメイン／サイド別平均。不足時は widen_days。レポートの比較基準は本数のみ。スコア = メイン差分 + 0.55×サイド差分。"
+}
+

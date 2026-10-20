@@ -1,0 +1,120 @@
+# Daily Pauper meta + Discord summary (案2)
+# 02:00 UTC = 11:00 JST / Monday 02:30 UTC = weekly digest
+name: Pauper daily
+
+on:
+  schedule:
+    - cron: "0 2 * * *"      # every day 02:00 UTC
+    - cron: "30 2 * * 1"     # Monday 02:30 UTC — weekly digest
+  workflow_dispatch:
+    inputs:
+      post_weekly:
+        description: "Also post weekly digest to Discord"
+        type: boolean
+        default: false
+      skip_ingest:
+        description: "Skip run-daily (summary/post only; uses existing DB)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pauper-daily
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+
+      - name: Detect job mode
+        id: mode
+        run: |
+          # schedule cron string is in github.event.schedule when triggered by cron
+          SCHEDULE="${{ github.event.schedule }}"
+          WEEKLY=0
+          DAILY=1
+          if [ "$SCHEDULE" = "30 2 * * 1" ]; then
+            WEEKLY=1
+            # Monday weekly slot: digest only (daily already ran at 02:00)
+            DAILY=0
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DAILY=1
+            if [ "${{ inputs.post_weekly }}" = "true" ]; then
+              WEEKLY=1
+            fi
+            if [ "${{ inputs.skip_ingest }}" = "true" ]; then
+              DAILY=0
+            fi
+          fi
+          echo "run_daily=$DAILY" >> "$GITHUB_OUTPUT"
+          echo "run_weekly=$WEEKLY" >> "$GITHUB_OUTPUT"
+          echo "Detected run_daily=$DAILY run_weekly=$WEEKLY schedule='$SCHEDULE'"
+
+      - name: Run daily ingest + report
+        if: steps.mode.outputs.run_daily == '1'
+        env:
+          PYTHONPATH: src
+        run: python -m pauper_meta run-daily
+
+      - name: Commit DB and reports
+        if: steps.mode.outputs.run_daily == '1'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/pauper.sqlite reports/
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: daily pauper update $(date -u +%Y-%m-%d)"
+            git push
+            echo "Pushed DB + reports"
+          fi
+
+      - name: Discord daily summary
+        if: steps.mode.outputs.run_daily == '1'
+        env:
+          PYTHONPATH: src
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "::warning::DISCORD_WEBHOOK_URL secret is not set — skipping Discord post (job continues)"
+            python -m pauper_meta discord-summary --mode daily --out /tmp/discord-daily.txt
+          else
+            python -m pauper_meta discord-summary --mode daily --post --out /tmp/discord-daily.txt
+          fi
+          echo "----- daily summary -----"
+          cat /tmp/discord-daily.txt
+
+      - name: Discord weekly digest
+        if: steps.mode.outputs.run_weekly == '1'
+        env:
+          PYTHONPATH: src
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "::warning::DISCORD_WEBHOOK_URL secret is not set — skipping weekly Discord post (job continues)"
+            python -m pauper_meta discord-summary --mode weekly --out /tmp/discord-weekly.txt
+          else
+            python -m pauper_meta discord-summary --mode weekly --post --out /tmp/discord-weekly.txt
+          fi
+          echo "----- weekly summary -----"
+          cat /tmp/discord-weekly.txt

@@ -1,0 +1,5 @@
+{
+  "window_days": 30,
+  "min_appearances": 7,
+  "comment": "常連プレイヤー閾値: 直近 window_days 日で min_appearances 回以上。日次レポートには出さない。指標は出場回数・Top8率・マッチ勝敗（swiss + bracket）。"
+}
