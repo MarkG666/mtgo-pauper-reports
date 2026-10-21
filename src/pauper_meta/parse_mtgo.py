@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -29,6 +30,8 @@ ROUND_NAMES = {
     5: "32nd-finals",
     6: "64th-finals",
 }
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -172,6 +175,159 @@ def _card_entries(items: list[dict[str, Any]] | None, board: str) -> list[Parsed
     return out
 
 
+def _login_rank_map(rows: list[dict[str, Any]] | None, rank_key: str = "rank") -> dict[str, int]:
+    out: dict[str, int] = {}
+    for row in rows or []:
+        login = str(row.get("loginid") or "")
+        if not login:
+            continue
+        try:
+            out[login] = int(row.get(rank_key))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def derive_bracket_top8_ranks(
+    brackets: list[dict[str, Any]] | None,
+    *,
+    player_to_login: dict[str, str],
+    swiss_by_login: dict[str, int],
+) -> dict[str, int]:
+    """Map loginid → finish 1–8 from Top8 SE bracket.
+
+    Within the same elimination round (SF losers → 3–4, QF losers → 5–8),
+    order by swiss rank ascending (better swiss = better finish), matching
+    typical MTGO ``final_rank`` / MTGGoldfish ordering.
+    """
+    final_w: str | None = None
+    final_l: str | None = None
+    sf_losers: list[str] = []
+    qf_losers: list[str] = []
+
+    for rnd in brackets or []:
+        try:
+            idx = int(rnd.get("index"))
+        except (TypeError, ValueError):
+            continue
+        for match in rnd.get("matches") or []:
+            players = match.get("players") or []
+            if len(players) < 2:
+                continue
+            a, b = players[0], players[1]
+            if a.get("winner"):
+                winner, loser = a, b
+            elif b.get("winner"):
+                winner, loser = b, a
+            else:
+                continue
+            wp = str(winner.get("player") or "")
+            lp = str(loser.get("player") or "")
+            if not wp or not lp:
+                continue
+            if idx == 0:
+                final_w, final_l = wp, lp
+            elif idx == 1:
+                sf_losers.append(lp)
+            elif idx == 2:
+                qf_losers.append(lp)
+
+    def swiss_key(player: str) -> int:
+        lid = player_to_login.get(player, "")
+        return swiss_by_login.get(lid, 999)
+
+    out: dict[str, int] = {}
+
+    def set_rank(player: str | None, rank: int) -> None:
+        if not player:
+            return
+        lid = player_to_login.get(player)
+        if lid:
+            out[lid] = rank
+
+    set_rank(final_w, 1)
+    set_rank(final_l, 2)
+    for i, player in enumerate(sorted(sf_losers, key=swiss_key)):
+        set_rank(player, 3 + i)
+    for i, player in enumerate(sorted(qf_losers, key=swiss_key)):
+        set_rank(player, 5 + i)
+    return out
+
+
+def resolve_finish_ranks(
+    *,
+    brackets: list[dict[str, Any]] | None,
+    final_by_login: dict[str, int],
+    swiss_by_login: dict[str, int],
+    player_to_login: dict[str, str],
+) -> dict[str, int]:
+    """Challenge Top8: bracket results for 1–8; swiss (or final_rank) for 9+.
+
+    When ``final_rank`` is missing at ingest time (common while ``inplayoffs``),
+    falling back to swiss alone mis-labels the champion — so brackets win for 1–8.
+    """
+    bracket_top8 = derive_bracket_top8_ranks(
+        brackets,
+        player_to_login=player_to_login,
+        swiss_by_login=swiss_by_login,
+    )
+
+    finish: dict[str, int] = {}
+    if bracket_top8:
+        finish.update(bracket_top8)
+        top8_logins = set(bracket_top8)
+        for login, swiss in swiss_by_login.items():
+            if login in top8_logins:
+                continue
+            fr = final_by_login.get(login)
+            # Prefer published final_rank for non-Top8 when it isn't a Top8 slot.
+            if fr is not None and fr > 8:
+                finish[login] = fr
+            else:
+                finish[login] = swiss
+        for login, fr in final_by_login.items():
+            if login not in finish and fr > 8:
+                finish[login] = fr
+        return finish
+
+    if final_by_login:
+        return dict(final_by_login)
+
+    return dict(swiss_by_login)
+
+
+def validate_finish_vs_bracket(parsed: ParsedEvent) -> list[str]:
+    """Cheap in-memory check: finalist/champion must match finish_rank 1–2.
+
+    Runs on already-parsed decks/matches — no extra HTTP.
+    """
+    if parsed.event_type != "challenge":
+        return []
+    finals = [m for m in parsed.matches if m.round_index == 0 and m.winner]
+    if not finals:
+        return []
+    final = finals[0]
+    champ = final.winner
+    runner = final.player_b if final.player_a == champ else final.player_a
+    by_player = {d.player: d for d in parsed.decks if d.player}
+    warnings: list[str] = []
+    c = by_player.get(champ)
+    if c is None:
+        warnings.append(f"bracket champion {champ!r} has no deck row")
+    elif c.finish_rank != 1:
+        warnings.append(
+            f"bracket champion {champ!r} finish_rank={c.finish_rank} expected 1"
+        )
+    r = by_player.get(runner)
+    if runner and r is None:
+        warnings.append(f"bracket finalist {runner!r} has no deck row")
+    elif runner and r is not None and r.finish_rank != 2:
+        warnings.append(
+            f"bracket finalist {runner!r} finish_rank={r.finish_rank} expected 2"
+        )
+    return warnings
+
+
 def parse_event(raw: dict[str, Any], fallback_type: str | None = None, source_url: str = "") -> ParsedEvent:
     name = str(raw.get("description") or "").strip() or "Unknown Event"
     et = classify_event_type(name) or fallback_type
@@ -194,22 +350,8 @@ def parse_event(raw: dict[str, Any], fallback_type: str | None = None, source_ur
     if url and not url.endswith("/"):
         url = url + "/"
 
-    # ranks
-    final_by_login: dict[str, int] = {}
-    for row in raw.get("final_rank") or []:
-        login = str(row.get("loginid") or "")
-        try:
-            final_by_login[login] = int(row.get("rank"))
-        except (TypeError, ValueError):
-            continue
-
-    swiss_by_login: dict[str, int] = {}
-    for row in raw.get("standings") or []:
-        login = str(row.get("loginid") or "")
-        try:
-            swiss_by_login[login] = int(row.get("rank"))
-        except (TypeError, ValueError):
-            continue
+    final_by_login = _login_rank_map(raw.get("final_rank"))
+    swiss_by_login = _login_rank_map(raw.get("standings"))
 
     wl_by_login: dict[str, tuple[int, int]] = {}
     for row in raw.get("winloss") or []:
@@ -219,20 +361,37 @@ def parse_event(raw: dict[str, Any], fallback_type: str | None = None, source_ur
         except (TypeError, ValueError):
             continue
 
-    decks: list[ParsedDeck] = []
+    player_to_login: dict[str, str] = {}
+    deck_meta: list[tuple[str, str, str, int, list[ParsedCard]]] = []
     for idx, d in enumerate(raw.get("decklists") or []):
         deck_id = str(d.get("decktournamentid") or "").strip()
         if not deck_id:
             continue
         loginid = str(d.get("loginid") or "")
-        cards = _card_entries(d.get("main_deck"), "main") + _card_entries(d.get("sideboard_deck"), "side")
+        player = str(d.get("player") or "")
+        if player and loginid:
+            player_to_login[player] = loginid
+        cards = _card_entries(d.get("main_deck"), "main") + _card_entries(
+            d.get("sideboard_deck"), "side"
+        )
+        deck_meta.append((deck_id, player, loginid, idx, cards))
+
+    finish_by_login = resolve_finish_ranks(
+        brackets=raw.get("brackets"),
+        final_by_login=final_by_login,
+        swiss_by_login=swiss_by_login,
+        player_to_login=player_to_login,
+    )
+
+    decks: list[ParsedDeck] = []
+    for deck_id, player, loginid, idx, cards in deck_meta:
         sw, sl = wl_by_login.get(loginid, (None, None))
         decks.append(
             ParsedDeck(
                 deck_id=deck_id,
-                player=str(d.get("player") or ""),
+                player=player,
                 loginid=loginid,
-                finish_rank=final_by_login.get(loginid),
+                finish_rank=finish_by_login.get(loginid),
                 swiss_rank=swiss_by_login.get(loginid),
                 deck_index=idx,
                 swiss_wins=sw,
@@ -270,7 +429,7 @@ def parse_event(raw: dict[str, Any], fallback_type: str | None = None, source_ur
                 )
             )
 
-    return ParsedEvent(
+    parsed = ParsedEvent(
         event_id=event_id,
         name=name,
         start_time=str(raw.get("starttime") or ""),
@@ -281,3 +440,6 @@ def parse_event(raw: dict[str, Any], fallback_type: str | None = None, source_ur
         matches=matches,
         raw=raw,
     )
+    for msg in validate_finish_vs_bracket(parsed):
+        logger.warning("event %s rank validation: %s", event_id, msg)
+    return parsed

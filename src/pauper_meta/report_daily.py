@@ -224,6 +224,119 @@ def _bracket_match_wl_by_player(
     return {p: (wins[p], losses[p]) for p in players}
 
 
+def _bracket_top8_by_player(conn: sqlite3.Connection, event_id: str) -> dict[str, int]:
+    """Derive player → finish 1–8 from stored matches + swiss (no HTTP)."""
+    decks = conn.execute(
+        "SELECT player, loginid, swiss_rank FROM decks WHERE event_id = ?",
+        (event_id,),
+    ).fetchall()
+    player_to_login = {
+        (r["player"] or ""): (r["loginid"] or "") for r in decks if r["player"]
+    }
+    swiss_by_login = {
+        (r["loginid"] or ""): int(r["swiss_rank"])
+        for r in decks
+        if r["loginid"] and r["swiss_rank"] is not None
+    }
+    # Rebuild minimal bracket payload from matches table
+    by_round: dict[int, list[dict]] = defaultdict(list)
+    for m in conn.execute(
+        """
+        SELECT round_index, player_a, player_b, wins_a, wins_b, winner
+        FROM matches WHERE event_id = ?
+        """,
+        (event_id,),
+    ).fetchall():
+        idx = int(m["round_index"] if m["round_index"] is not None else -1)
+        a, b = m["player_a"] or "", m["player_b"] or ""
+        w = m["winner"] or ""
+        by_round[idx].append(
+            {
+                "players": [
+                    {
+                        "player": a,
+                        "wins": int(m["wins_a"] or 0),
+                        "winner": bool(w and w == a),
+                    },
+                    {
+                        "player": b,
+                        "wins": int(m["wins_b"] or 0),
+                        "winner": bool(w and w == b),
+                    },
+                ]
+            }
+        )
+    if not by_round:
+        return {}
+    from .parse_mtgo import derive_bracket_top8_ranks
+
+    brackets = [{"index": idx, "matches": matches} for idx, matches in by_round.items()]
+    by_login = derive_bracket_top8_ranks(
+        brackets,
+        player_to_login=player_to_login,
+        swiss_by_login=swiss_by_login,
+    )
+    login_to_player = {lid: p for p, lid in player_to_login.items() if lid}
+    return {
+        login_to_player[lid]: rank
+        for lid, rank in by_login.items()
+        if lid in login_to_player
+    }
+
+
+def backfill_finish_ranks_from_brackets(
+    conn: sqlite3.Connection, event_id: str
+) -> int:
+    """If Challenge has bracket matches but null finish_rank, fill from brackets.
+
+    Returns number of decks updated. Cheap — uses rows already in SQLite.
+    """
+    has_matches = conn.execute(
+        "SELECT 1 FROM matches WHERE event_id = ? LIMIT 1", (event_id,)
+    ).fetchone()
+    if not has_matches:
+        return 0
+    null_fr = conn.execute(
+        """
+        SELECT COUNT(*) AS c FROM decks
+        WHERE event_id = ? AND finish_rank IS NULL
+        """,
+        (event_id,),
+    ).fetchone()["c"]
+    if not null_fr:
+        return 0
+
+    by_player = _bracket_top8_by_player(conn, event_id)
+    if not by_player:
+        return 0
+
+    updated = 0
+    for row in conn.execute(
+        "SELECT id, player, swiss_rank, finish_rank FROM decks WHERE event_id = ?",
+        (event_id,),
+    ).fetchall():
+        player = row["player"] or ""
+        if player in by_player:
+            new_rank = by_player[player]
+        elif (
+            row["finish_rank"] is None
+            and row["swiss_rank"] is not None
+            and int(row["swiss_rank"]) > 8
+        ):
+            # Places 9+: swiss standings (never use swiss 1–8 as finish without bracket)
+            new_rank = int(row["swiss_rank"])
+        else:
+            continue
+        if row["finish_rank"] == new_rank:
+            continue
+        conn.execute(
+            "UPDATE decks SET finish_rank = ? WHERE id = ?",
+            (new_rank, row["id"]),
+        )
+        updated += 1
+    return updated
+
+
 def _winrate(wins: int, losses: int) -> float | None:
     total = wins + losses
     if total <= 0:
@@ -260,6 +373,10 @@ def _arch_strength_from_decks(
             fr = g["finish_rank"]
             if fr is not None and int(fr) <= 8:
                 top8 += 1
+            elif fr is None:
+                # Legacy rows: count bracket participants when finish_rank was never set
+                if (g["player"] or "") in bracket_cache.get(g["event_id"], {}):
+                    top8 += 1
         out.append(
             ArchCount(
                 archetype=arch,
@@ -448,21 +565,31 @@ def _top8_bracket(conn: sqlite3.Connection, event_id: str) -> list[Top8Entry]:
         """,
         (event_id,),
     ).fetchall()
-    use_swiss = False
+    rank_by_player: dict[str, int] = {}
     if not rows:
-        use_swiss = True
-        rows = conn.execute(
-            """
-            SELECT * FROM decks
-            WHERE event_id = ? AND swiss_rank IS NOT NULL AND swiss_rank <= 8
-            ORDER BY swiss_rank ASC, player
-            """,
-            (event_id,),
-        ).fetchall()
+        # Do NOT use swiss Top8 as stand-ins for 優勝/準優勝 — that disagreed with
+        # MTGO brackets / Goldfish when final_rank was missing at ingest.
+        rank_by_player = _bracket_top8_by_player(conn, event_id)
+        if rank_by_player:
+            placeholders = ",".join("?" * len(rank_by_player))
+            rows = conn.execute(
+                f"""
+                SELECT * FROM decks
+                WHERE event_id = ? AND player IN ({placeholders})
+                """,
+                (event_id, *rank_by_player.keys()),
+            ).fetchall()
+            rows = sorted(
+                rows,
+                key=lambda r: (rank_by_player.get(r["player"] or "", 99), r["player"] or ""),
+            )
     out: list[Top8Entry] = []
     for r in rows:
-        rank = int(r["swiss_rank"] if use_swiss else r["finish_rank"])
         player = r["player"] or ""
+        if rank_by_player:
+            rank = rank_by_player[player]
+        else:
+            rank = int(r["finish_rank"])
         out.append(
             Top8Entry(
                 place_label=_place_label(rank),
@@ -607,6 +734,11 @@ def build_report_data(
 
     event_summaries: list[EventSummary] = []
     for ev in events_rows:
+        n_fix = backfill_finish_ranks_from_brackets(conn, ev["id"])
+        if n_fix:
+            notes.append(
+                f"event {ev['id']}: finish_rank をブラケットから {n_fix} 件補完"
+            )
         recompute_top8_dist_for_event(conn, ev["id"])
         deck_count = conn.execute(
             "SELECT COUNT(*) AS c FROM decks WHERE event_id = ?",
