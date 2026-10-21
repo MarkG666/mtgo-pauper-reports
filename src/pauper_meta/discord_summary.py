@@ -9,9 +9,10 @@ import urllib.error
 import urllib.request
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from .db import db_session, init_db
-from .paths import REPORTS_DIR, ensure_dirs
+from .paths import DISCORD_POSTED_PATH, REPORTS_DIR, ensure_dirs
 from .report_daily import DailyReportData, Top8Entry, build_report_data, today_jst
 
 log = logging.getLogger(__name__)
@@ -21,6 +22,43 @@ DEFAULT_BRANCH = "main"
 MAX_CHARS = 1800
 META_TOP_N = 8
 WEEKLY_TOP_N = 10
+
+
+def load_discord_posted(path: Path | None = None) -> dict[str, list[str]]:
+    """Load posted-date tracker. Shape: ``{"daily": ["YYYY-MM-DD", ...], "weekly": [...]}``."""
+    p = path or DISCORD_POSTED_PATH
+    if not p.exists():
+        return {"daily": [], "weekly": []}
+    try:
+        data: Any = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"daily": [], "weekly": []}
+    if not isinstance(data, dict):
+        return {"daily": [], "weekly": []}
+    out: dict[str, list[str]] = {"daily": [], "weekly": []}
+    for key in ("daily", "weekly"):
+        raw = data.get(key) or []
+        if isinstance(raw, list):
+            out[key] = sorted({str(x) for x in raw if x})
+    return out
+
+
+def was_discord_posted(mode: str, report_date: date, path: Path | None = None) -> bool:
+    data = load_discord_posted(path)
+    return report_date.isoformat() in data.get(mode, [])
+
+
+def mark_discord_posted(mode: str, report_date: date, path: Path | None = None) -> None:
+    """Record that we successfully posted; idempotent. File is Git-tracked."""
+    ensure_dirs()
+    p = path or DISCORD_POSTED_PATH
+    data = load_discord_posted(p)
+    key = "weekly" if mode == "weekly" else "daily"
+    dates = set(data.get(key, []))
+    dates.add(report_date.isoformat())
+    data[key] = sorted(dates)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    log.info("marked discord posted mode=%s date=%s path=%s", key, report_date.isoformat(), p)
 
 
 def report_github_url(report_date: str, *, repo: str | None = None, branch: str | None = None) -> str:
@@ -191,8 +229,16 @@ def generate_and_maybe_post(
     webhook_url: str | None = None,
     post: bool = False,
     out_path: Path | None = None,
+    skip_if_posted: bool = True,
+    force_post: bool = False,
 ) -> str:
-    """Build summary text; optionally write file and/or POST to Discord."""
+    """Build summary text; optionally write file and/or POST to Discord.
+
+    When ``post`` and ``skip_if_posted`` (default), skip the webhook if
+    ``data/discord_posted.json`` already lists this mode+date — prevents
+    double-posts on catch-up or re-runs. Successful posts update that file.
+    ``force_post`` bypasses the dedupe check.
+    """
     ensure_dirs()
     init_db()
     rd = report_date or today_jst()
@@ -215,13 +261,22 @@ def generate_and_maybe_post(
         log.warning("daily report md missing at %s (URL may 404 until commit)", md)
 
     if post:
-        url = resolve_webhook_url(webhook_url)
-        if not url:
-            log.warning(
-                "DISCORD_WEBHOOK_URL not set; skipping Discord post (setup Secret to enable)"
+        track_mode = "weekly" if mode == "weekly" else "daily"
+        if skip_if_posted and not force_post and was_discord_posted(track_mode, rd):
+            log.info(
+                "Discord %s for %s already posted — skipping (dedupe)",
+                track_mode,
+                rd.isoformat(),
             )
         else:
-            post_discord_webhook(text, url)
-            log.info("posted %s summary to Discord (%s chars)", mode, len(text))
+            url = resolve_webhook_url(webhook_url)
+            if not url:
+                log.warning(
+                    "DISCORD_WEBHOOK_URL not set; skipping Discord post (setup Secret to enable)"
+                )
+            else:
+                post_discord_webhook(text, url)
+                mark_discord_posted(track_mode, rd)
+                log.info("posted %s summary to Discord (%s chars)", mode, len(text))
 
     return text

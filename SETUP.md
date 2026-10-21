@@ -14,8 +14,14 @@
 3. Actions（自動実行）を有効にし、一度手動で動かす  
 4. Discord と GitHub のレポートを確認する  
 
-以降は毎日 **日本時間 11:00**（UTC 02:00）に自動実行されます。  
-月曜は追加で **週次ダイジェスト**（UTC 02:30）も投稿します。
+以降は毎日、米国の夏時間にあわせて自動実行されます。
+
+| 米国 Eastern | 日次（JST） | 日次（UTC） | 月曜・週次（UTC） |
+|--------------|-------------|-------------|-------------------|
+| 夏時間（EDT） | **13:00** | 04:00 | 04:30（日次の +30分） |
+| 標準時（EST） | **14:00** | 05:00 | 05:30 |
+
+日本に夏時間はないので JST=UTC+9 固定。Actions は両方の UTC 時刻に cron を置き、その日が EDT/EST のどちらかで正しい枠だけ動かします。
 
 ---
 
@@ -68,6 +74,9 @@ Secret が無いときでも集計自体は動きますが、Discord には投�
 | Discord チャンネル | 日付・イベント・Top8・メタ上位・特徴の短い要約＋全文リンク |
 | GitHub の `reports/daily/` | その日の `.md` が増えている／更新されている |
 | GitHub の `data/pauper.sqlite` | 更新時刻が進んでいる |
+| GitHub の `data/discord_posted.json` | Discord 投稿済み日付（二重投稿防止） |
+
+日次実行では **JST 昨日**の不完全イベント／欠落レポートも一度見直します（詳細はプロジェクト Context の `docs/yesterday-catchup.md`）。
 
 全文リンク例:  
 `https://github.com/MarkG666/mtgo-pauper-reports/blob/main/reports/daily/YYYY-MM-DD.md`  
@@ -81,7 +90,7 @@ Secret が無いときでも集計自体は動きますが、Discord には投�
 2. **Also post weekly digest to Discord** にチェック  
 3. Run  
 
-通常は毎週月曜 UTC 02:30 に自動投稿されます。
+通常は毎週月曜、日次と同じ DST ルールで **日次の +30分**（EDT期 04:30 UTC／EST期 05:30 UTC）に自動投稿されます。
 
 ---
 
