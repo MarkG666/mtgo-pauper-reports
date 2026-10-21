@@ -231,6 +231,30 @@ SIGNATURES: list[tuple[str, list[tuple[str, int]]]] = [
             ("Weather the Storm", 2),
         ],
     ),
+    # Ruby Storm (Kampo-style): Goblin Anarchomancer + Thornscape Familiar (~4+4),
+    # Sandstone Needle / Hickory Woodlot, rituals + storm/cantrips.
+    # Core gate in classify_deck avoids storage-land-only / generic red false positives.
+    # Must outscore Mono-Red Madness (Highway Robbery) and Cycle Storm (Lotus Petal) overlaps.
+    (
+        "Ruby Storm",
+        [
+            ("Goblin Anarchomancer", 5),
+            ("Thornscape Familiar", 5),
+            ("Sandstone Needle", 4),
+            ("Hickory Woodlot", 4),
+            ("Desperate Ritual", 3),
+            ("Seething Song", 3),
+            ("Manamorphose", 3),
+            ("Glimpse the Impossible", 3),
+            ("Twinned Vision", 3),
+            ("Seize the Storm", 3),
+            ("Wrenn's Resolve", 2),
+            ("Geothermal Crevice", 2),
+            ("First Day of Class", 2),
+            ("Crossover Collaboration", 2),
+            ("Big Score", 1),
+        ],
+    ),
     (
         "Familiars",
         [
@@ -446,12 +470,35 @@ def _resolve_hawk_family(counts: Counter[str], best_name: str, scores: list[tupl
     return best_name
 
 
+def _is_ruby_storm_core(counts: Counter[str]) -> bool:
+    """Anarchomancer + Thornscape Familiar package with Needle/Woodlot storage lands."""
+    gob = counts.get("Goblin Anarchomancer", 0)
+    thorn = counts.get("Thornscape Familiar", 0)
+    lands = counts.get("Sandstone Needle", 0) + counts.get("Hickory Woodlot", 0)
+    return gob >= 2 and thorn >= 2 and (gob + thorn) >= 6 and lands >= 4
+
+
+def _resolve_ruby_storm(counts: Counter[str], best_name: str, scores: list[tuple[str, int]]) -> str:
+    """Prefer Ruby Storm when dual-creature + storage-land core is present; else demote."""
+    if _is_ruby_storm_core(counts):
+        return "Ruby Storm"
+    if best_name == "Ruby Storm":
+        for name, score in scores:
+            if name != "Ruby Storm" and score >= 8:
+                return name
+        return "Unknown"
+    return best_name
+
+
 def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     counts = Counter(main)
     scores: list[tuple[str, int]] = []
     for name, sigs in SIGNATURES:
         # Hawk signature only counts when Glint Hawk is present (avoids WW false positives).
         if name == "Boros Hawk" and counts.get("Glint Hawk", 0) < 2:
+            continue
+        # Ruby Storm only scores with the dual-creature + storage-land core.
+        if name == "Ruby Storm" and not _is_ruby_storm_core(counts):
             continue
         score = 0
         for card, weight in sigs:
@@ -467,6 +514,11 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
             name = _hawk_variant_name(counts)
             hawk_score = next((s for n, s in scores if n == "Boros Hawk"), 0)
             return Classification(archetype=name, score=max(hawk_score, 8), runners_up=scores[:3])
+        if _is_ruby_storm_core(counts):
+            ruby_score = next((s for n, s in scores if n == "Ruby Storm"), 0)
+            return Classification(
+                archetype="Ruby Storm", score=max(ruby_score, 8), runners_up=scores[:3]
+            )
         return Classification(archetype="Unknown", score=scores[0][1] if scores else 0, runners_up=scores[:3])
     best_name, best_score = scores[0]
     # Disambiguate Dimir Faeries vs Dimir Control / Mono-Blue
@@ -478,6 +530,7 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
         best_name = "Mono-Red Madness"
     best_name = _resolve_mono_red_aggro(counts, best_name)
     best_name = _resolve_hawk_family(counts, best_name, scores)
+    best_name = _resolve_ruby_storm(counts, best_name, scores)
     return Classification(archetype=best_name, score=best_score, runners_up=scores[1:4])
 
 

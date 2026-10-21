@@ -17,6 +17,7 @@
 - W 色ラベルは変更なし
 - 今後: チャットで「A→Bにして」、または `aliases.csv` / `overrides.csv` 編集後に `apply-overrides`（全件再分類あり）
 - 2026-10-21: Glitters 廃止 → Boros / Mardu / Jeskai / 4c Hawk（Snacker は色に数えない）
+- 2026-10-21: **Ruby Storm** 追加（Anarchomancer + Thornscape Familiar + Needle/Woodlot）。Kampo 基準。aliases: RubyStorm / RG Storm / Gruul Storm
 
 ## 順位 / Top8
 
