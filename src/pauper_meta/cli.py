@@ -1,4 +1,4 @@
-"""CLI entry: run-daily / apply-overrides / report / init-db / player-stats / discord-*."""
+"""CLI entry: run-daily / run-paper / apply-overrides / report / init-db / player-stats / discord-*."""
 
 from __future__ import annotations
 
@@ -11,10 +11,11 @@ from pathlib import Path
 from .backfill import run_backfill
 from .catchup import run_yesterday_catchup
 from .db import db_session, init_db
-from .discord_summary import generate_and_maybe_post
+from .discord_summary import generate_and_maybe_post, post_paper_events_if_new
 from .ingest import run_ingest
+from .ingest_paper import load_paper_config, run_paper_scan
 from .overrides import apply_all
-from .paths import DB_PATH, LOGS_DIR, PROJECT_ROOT, ensure_dirs
+from .paths import DB_PATH, FIXTURES_DIR, LOGS_DIR, PROJECT_ROOT, ensure_dirs
 from .players import (
     format_player_stats_table,
     load_player_stats_config,
@@ -22,6 +23,7 @@ from .players import (
     rebuild_player_event_results,
 )
 from .report_daily import today_jst, write_report
+from .report_paper import write_weekly_report
 
 
 def _setup_logging(report_date: str) -> Path:
@@ -209,8 +211,92 @@ def cmd_discord_summary(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run_paper(args: argparse.Namespace) -> int:
+    """Paper spike: scan MTGDecks (≥50) → SQLite channel=paper → weekly md → Discord."""
+    ensure_dirs()
+    today = today_jst()
+    log_path = _setup_logging(f"paper-{today.isoformat()}")
+    logging.info("run-paper start (JST date=%s)", today.isoformat())
+    init_db()
+    cfg = load_paper_config()
+    offline_listing = Path(args.offline_listing) if args.offline_listing else None
+    offline_events = Path(args.offline_events_dir) if args.offline_events_dir else None
+    # Default offline fixtures when --fixtures (Actions CF fallback path)
+    if args.fixtures and not offline_listing:
+        candidate = FIXTURES_DIR / "mtgdecks" / "listing-tabletop-mini.html"
+        if candidate.exists():
+            offline_listing = candidate
+        offline_events = offline_events or (FIXTURES_DIR / "mtgdecks")
+
+    summary = run_paper_scan(
+        offline_listing=offline_listing,
+        offline_events_dir=offline_events,
+        force=bool(args.force),
+        max_events=args.max_events,
+        try_live=not bool(args.fixtures) and not bool(args.offline_only),
+    )
+    logging.info(
+        "paper scan method=%s cf_blocked=%s candidates=%s ingested=%s skipped=%s failed=%s",
+        summary.get("fetch_method"),
+        summary.get("cf_blocked"),
+        summary.get("candidates"),
+        summary.get("ingested"),
+        summary.get("skipped_existing"),
+        summary.get("failed"),
+    )
+
+    notes: list[str] = []
+    if summary.get("cf_blocked"):
+        notes.append(
+            "Cloudflare によりライブ取得がブロックされた（または失敗）。"
+            "フィクスチャ／手動ドロップがあればそれを使用。"
+        )
+    if summary.get("fetch_method") in ("fixtures-only", "offline"):
+        notes.append(f"取得モード: {summary.get('fetch_method')}")
+
+    with db_session() as conn:
+        report_path, week_key, events = write_weekly_report(
+            conn,
+            as_of=today,
+            include_all_if_empty=True,
+            notes=notes,
+        )
+
+    posted: list[str] = []
+    if args.post_discord or args.discord_dry_run:
+        # Only notify for events ingested this run (new analyses), unless force
+        notify = events
+        if summary.get("ingested") and not args.force_discord:
+            want = set(summary["ingested"])
+            notify = [e for e in events if e.event_id in want]
+        posted = post_paper_events_if_new(
+            notify,
+            week_key=week_key,
+            webhook_url=args.webhook,
+            post=bool(args.post_discord),
+            force_post=bool(args.force_discord),
+            username=str(cfg.get("discord_username") or "Pauper Paper"),
+        )
+
+    print(
+        f"OK paper week={week_key} report={report_path} "
+        f"ingested={len(summary.get('ingested') or [])} "
+        f"cf_blocked={int(bool(summary.get('cf_blocked')))} "
+        f"method={summary.get('fetch_method')} discord_posted={len(posted)}"
+    )
+    print(f"log={log_path}")
+    print(f"db={DB_PATH}")
+    if summary.get("failed"):
+        for f in summary["failed"][:10]:
+            print(f"  fail {f}")
+        # Non-fatal for CF-only failures when fixtures produced a report
+        if not events and summary.get("cf_blocked"):
+            return 2
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="pauper_meta", description="Pauper meta tracker (Phase 1)")
+    p = argparse.ArgumentParser(prog="pauper_meta", description="Pauper meta tracker")
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("init-db", help="Create SQLite schema")
@@ -288,6 +374,47 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("--webhook", type=str, default=None, help="Webhook URL (prefer Secret/env)")
     s.set_defaults(func=cmd_discord_summary)
+
+    s = sub.add_parser(
+        "run-paper",
+        help="Paper spike: MTGDecks ≥50 scan → channel=paper → weekly md → Discord (new events)",
+    )
+    s.add_argument("--force", action="store_true", help="Reingest even if event already in DB")
+    s.add_argument("--max-events", type=int, default=None, help="Limit events this run")
+    s.add_argument(
+        "--fixtures",
+        action="store_true",
+        help="Use fixtures/mtgdecks offline HTML only (no live Playwright)",
+    )
+    s.add_argument(
+        "--offline-only",
+        action="store_true",
+        help="Do not attempt live fetch (requires --offline-listing and/or event HTML drops)",
+    )
+    s.add_argument("--offline-listing", type=str, default=None, help="Local listing HTML path")
+    s.add_argument(
+        "--offline-events-dir",
+        type=str,
+        default=None,
+        help="Directory of event-<id>-*.html drops (default fixtures/mtgdecks when --fixtures)",
+    )
+    s.add_argument(
+        "--post-discord",
+        action="store_true",
+        help="POST new paper events to Discord (DISCORD_WEBHOOK_URL; same channel as Challenge for now)",
+    )
+    s.add_argument(
+        "--discord-dry-run",
+        action="store_true",
+        help="Build paper Discord texts without POSTing",
+    )
+    s.add_argument(
+        "--force-discord",
+        action="store_true",
+        help="Post even if data/discord_posted.json already lists the paper event id",
+    )
+    s.add_argument("--webhook", type=str, default=None, help="Webhook URL override")
+    s.set_defaults(func=cmd_run_paper)
 
     return p
 
