@@ -13,8 +13,10 @@
 
 - `Black Burn` → **BG Gardens**、`Terror` → **U Terror**
 - **Kuldotha Aggro 廃止** → **Mono Red Rally**（Rally / BTE 軸・混在・曖昧のデフォルト）／**Mono Red Axe**（Axe / Gingerbrute 軸が明確で Rally なしのときのみ）
+- **Glitters 廃止** → **Boros Hawk**（基本）／**Mardu Hawk**（黒スプラ）／**Jeskai Hawk**（青スプラ）／**4c Hawk**（黒＋青）。Sneaky Snacker のみでは色を足さない。緑スプラは Naya/5c（実績があれば）
 - W 色ラベルは変更なし
 - 今後: チャットで「A→Bにして」、または `aliases.csv` / `overrides.csv` 編集後に `apply-overrides`（全件再分類あり）
+- 2026-10-21: Glitters 廃止 → Boros / Mardu / Jeskai / 4c Hawk（Snacker は色に数えない）
 
 ## 順位 / Top8
 

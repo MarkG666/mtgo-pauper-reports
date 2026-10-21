@@ -39,7 +39,8 @@ Secret が無い間も集計は動きますが、Discord 投稿はスキップ�
 - **メタ概要**: Top32 合算（数 / Top8 / シェア / W-L / 勝率）  
 - **累積**: 過去1ヵ月／直近1週間。シェア≤2% は Other。直近週に前週差  
 - **特徴リスト**: Top16 から 3〜5 本。直近2週間の同アーキ平均との差分（メイン／サイド）  
-- アーキ改名: `config/aliases.csv` / 個別: `config/overrides.csv` → `apply-overrides`
+- アーキ改名: `config/aliases.csv` / 個別: `config/overrides.csv` → `apply-overrides`  
+- 旧 **Glitters** は色つき Hawk 名（**Boros Hawk** 基本。Sneaky Snacker のみでは色を足さない。黒スプラッシュ→**Mardu Hawk**、青→**Jeskai Hawk**、黒＋青→**4c Hawk**）
 
 ---
 

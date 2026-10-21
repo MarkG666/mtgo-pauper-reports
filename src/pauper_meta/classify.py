@@ -277,18 +277,86 @@ SIGNATURES: list[tuple[str, list[tuple[str, int]]]] = [
             ("Chainer's Edict", 2),
         ],
     ),
+    # Former "Glitters" → Hawk family (Boros base; color via _resolve_hawk_variant).
+    # Glint Hawk is required to score (see classify_deck). Snacker does not add a color.
+    # Refurbished Familiar / Cryogen Relic are splash signals, not signature weights
+    # (Familiar also scores Grixis Affinity — Hawk core must win when Glint Hawk is present).
     (
-        "Glitters",
+        "Boros Hawk",
         [
-            ("Glint Hawk", 5),
+            ("Glint Hawk", 6),
             ("Kor Skyfisher", 4),
-            ("Thraben Charm", 2),
+            ("Lembas", 3),
             ("Prophetic Prism", 3),
-            ("Refurbished Familiar", 3),
+            ("Cryogen Relic", 3),
+            ("Experimental Synthesizer", 2),
             ("Navigator's Compass", 2),
+            ("Melded Moxite", 2),
+            ("Thraben Charm", 2),
+            ("Cleansing Wildfire", 2),
+            ("Dispatch", 2),
+            ("Galvanic Blast", 1),
         ],
     ),
 ]
+
+# Non-land splash signals for Hawk color naming (Sneaky Snacker intentionally omitted).
+_HAWK_BLACK_SPLASH = frozenset(
+    {
+        "Refurbished Familiar",
+        "Cast Down",
+        "Tithing Blade",
+        "Grim Bauble",
+        "Blood Fountain",
+        "Eviscerator's Insight",
+        "Fanatical Offering",
+        "Okiba-Gang Shinobi",
+        "Thorn of the Black Rose",
+        "Nihil Spellbomb",
+        "Suffocating Fumes",
+        "Mukotai Ambusher",
+        "Black Mage's Rod",
+        "Oroku Saki, Shredder Rising",
+        "Deadly Dispute",
+        "Snuff Out",
+        "Duress",
+        "Makeshift Munitions",
+        "Mardu Devotee",
+        "Omen of the Dead",
+        "Reckoner's Bargain",
+    }
+)
+_HAWK_BLUE_SPLASH = frozenset(
+    {
+        "Cryogen Relic",
+        "Thoughtcast",
+        "Baleful Strix",
+        "Hydroblast",
+        "Blue Elemental Blast",
+        "Counterspell",
+        "Brainstorm",
+        "Lorien Revealed",
+        "Spell Pierce",
+        "Force Spike",
+        "Metallic Rebuke",
+        "Dream Stalker",
+    }
+)
+_HAWK_GREEN_SPLASH = frozenset(
+    {
+        "Weather the Storm",
+        "Pulse of Murasa",
+        "Arbor Elf",
+        "Utopia Sprawl",
+        "Annoyed Altisaur",
+        "Avenging Hunter",
+        "Snakeskin Veil",
+        "Ram Through",
+    }
+)
+_HAWK_FAMILY = frozenset(
+    {"Boros Hawk", "Mardu Hawk", "Jeskai Hawk", "4c Hawk", "Naya Hawk", "5c Hawk"}
+)
 
 
 @dataclass
@@ -334,10 +402,57 @@ def _resolve_mono_red_aggro(counts: Counter[str], best_name: str) -> str:
     return "Mono Red Rally"
 
 
+def _is_hawk_core(counts: Counter[str]) -> bool:
+    """True Glint Hawk bounce package (not white-weenie Kor Skyfisher lists)."""
+    return counts.get("Glint Hawk", 0) >= 2
+
+
+def _hawk_variant_name(counts: Counter[str]) -> str:
+    """Boros base; black → Mardu; blue → Jeskai; both → 4c; green → Naya/5c.
+
+    Sneaky Snacker alone does not add a color for naming.
+    """
+    has_b = any(counts.get(c, 0) > 0 for c in _HAWK_BLACK_SPLASH)
+    has_u = any(counts.get(c, 0) > 0 for c in _HAWK_BLUE_SPLASH)
+    has_g = any(counts.get(c, 0) > 0 for c in _HAWK_GREEN_SPLASH)
+    if has_b and has_u and has_g:
+        return "5c Hawk"
+    if has_b and has_u:
+        return "4c Hawk"
+    if has_b and has_g:
+        return "4c Hawk"
+    if has_u and has_g:
+        return "4c Hawk"
+    if has_g:
+        return "Naya Hawk"
+    if has_b:
+        return "Mardu Hawk"
+    if has_u:
+        return "Jeskai Hawk"
+    return "Boros Hawk"
+
+
+def _resolve_hawk_family(counts: Counter[str], best_name: str, scores: list[tuple[str, int]]) -> str:
+    """Prefer Hawk over Affinity/etc. when Glint Hawk core is present; apply color name."""
+    if _is_hawk_core(counts):
+        return _hawk_variant_name(counts)
+    # Signature may still fire weakly without enough Hawks — do not keep as Hawk.
+    if best_name in _HAWK_FAMILY or best_name == "Boros Hawk":
+        # Fall through to next-best non-Hawk score if any.
+        for name, score in scores:
+            if name not in _HAWK_FAMILY and name != "Boros Hawk" and score >= 8:
+                return name
+        return "Unknown"
+    return best_name
+
+
 def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     counts = Counter(main)
     scores: list[tuple[str, int]] = []
     for name, sigs in SIGNATURES:
+        # Hawk signature only counts when Glint Hawk is present (avoids WW false positives).
+        if name == "Boros Hawk" and counts.get("Glint Hawk", 0) < 2:
+            continue
         score = 0
         for card, weight in sigs:
             qty = counts.get(card, 0)
@@ -347,6 +462,11 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
             scores.append((name, score))
     scores.sort(key=lambda x: (-x[1], x[0]))
     if not scores or scores[0][1] < 8:
+        # Still promote clear Hawk cores that lost the threshold race only on paper.
+        if _is_hawk_core(counts):
+            name = _hawk_variant_name(counts)
+            hawk_score = next((s for n, s in scores if n == "Boros Hawk"), 0)
+            return Classification(archetype=name, score=max(hawk_score, 8), runners_up=scores[:3])
         return Classification(archetype="Unknown", score=scores[0][1] if scores else 0, runners_up=scores[:3])
     best_name, best_score = scores[0]
     # Disambiguate Dimir Faeries vs Dimir Control / Mono-Blue
@@ -357,6 +477,7 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     if best_name == "Burn" and counts.get("Grab the Prize", 0) + counts.get("Sneaky Snacker", 0) >= 3:
         best_name = "Mono-Red Madness"
     best_name = _resolve_mono_red_aggro(counts, best_name)
+    best_name = _resolve_hawk_family(counts, best_name, scores)
     return Classification(archetype=best_name, score=best_score, runners_up=scores[1:4])
 
 

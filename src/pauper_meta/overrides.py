@@ -202,6 +202,9 @@ def migrate_renamed_autos(conn: sqlite3.Connection) -> int:
         "Terror": "U Terror",
         # Interim: Kuldotha → Rally; reclassify_all_autos may then promote clear Axe.
         "Kuldotha Aggro": "Mono Red Rally",
+        # Interim: Glitters → Boros Hawk; reclassify_all_autos applies Mardu/Jeskai/4c.
+        "Glitters": "Boros Hawk",
+        "Glitter": "Boros Hawk",
     }
     n = 0
     for old, new in renames.items():
