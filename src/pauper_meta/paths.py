@@ -13,6 +13,7 @@ _data_override = os.environ.get("PAUPER_META_DATA_DIR", "").strip()
 DATA_DIR = Path(_data_override) if _data_override else (PROJECT_ROOT / "data")
 RAW_DIR = DATA_DIR / "raw" / "mtgo"
 DB_PATH = DATA_DIR / "pauper.sqlite"
+DISCORD_POSTED_PATH = DATA_DIR / "discord_posted.json"
 REPORTS_DIR = PROJECT_ROOT / "reports" / "daily"
 LOGS_DIR = PROJECT_ROOT / "logs"
 CONFIG_DIR = PROJECT_ROOT / "config"

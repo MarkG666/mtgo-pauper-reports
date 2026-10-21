@@ -1,7 +1,7 @@
 # MTGO Pauper メタトラッカー
 
 Magic Online の **Pauper Challenge** と **Preliminary** を毎日取得し、日本語の Markdown レポートを作ります。  
-運用の本線は **GitHub Actions**（日本時間 11:00）＋ **Discord Webhook**（要約＋GitHub 全文リンク）です。
+運用の本線は **GitHub Actions**（米国夏時間中は **13:00 JST**、標準時は **14:00 JST**）＋ **Discord Webhook**（要約＋GitHub 全文リンク）です。
 
 - リポジトリ: https://github.com/MarkG666/mtgo-pauper-reports  
 - Actions: https://github.com/MarkG666/mtgo-pauper-reports/actions  
@@ -13,9 +13,11 @@ Magic Online の **Pauper Challenge** と **Preliminary** を毎日取得し、�
 
 | タイミング | 内容 |
 |------------|------|
-| 毎日 02:00 UTC（= 11:00 JST） | 取得・集計 → `data/pauper.sqlite` と `reports/daily/*.md` を commit → Discord に**日次要約** |
-| 月曜 02:30 UTC | Discord に**週次ダイジェスト**（1ヵ月／直近1週＋前週差） |
-| 手動（Actions → Run workflow） | いつでも同じ処理を再実行可能 |
+| 毎日 **13:00 JST**（米DST=EDT期）／**14:00 JST**（米標準時=EST期） | 取得・集計 → 前日キャッチアップ → DB/レポート commit → Discord **日次要約**（未投稿日のみ） |
+| 月曜・日次の **+30分** | Discord **週次ダイジェスト**（1ヵ月／直近1週＋前週差）。UTC では 04:30（EDT期）／05:30（EST期） |
+| 手動（Actions → Run workflow） | いつでも同じ処理を再実行可能（DSTゲートを bypass） |
+
+Cron は UTC 04:00 と 05:00 の両方に置き、`America/New_York` の夏時間判定で正しい枠だけ実行します。
 
 Discord には短い要約だけ送ります。表つきの全文は GitHub の `reports/daily/YYYY-MM-DD.md` を開いてください。
 
@@ -59,7 +61,7 @@ python -m pauper_meta run-daily
 
 | コマンド | 意味 |
 |----------|------|
-| `python -m pauper_meta run-daily` | 取得 → DB → 今日（JST）のレポート |
+| `python -m pauper_meta run-daily` | 取得 → DB → 今日（JST）のレポート → 前日キャッチアップ |
 | `python -m pauper_meta discord-summary --mode daily` | Discord 日次要約を表示（`--post` で投稿） |
 | `python -m pauper_meta discord-summary --mode weekly --post` | 週次ダイジェストを投稿 |
 | `python -m pauper_meta apply-overrides` | 別名／個別修正を適用してレポート再生成 |

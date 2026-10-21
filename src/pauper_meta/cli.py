@@ -9,6 +9,7 @@ from datetime import date
 from pathlib import Path
 
 from .backfill import run_backfill
+from .catchup import run_yesterday_catchup
 from .db import db_session, init_db
 from .discord_summary import generate_and_maybe_post
 from .ingest import run_ingest
@@ -47,7 +48,8 @@ def cmd_init_db(_args: argparse.Namespace) -> int:
 
 def cmd_run_daily(args: argparse.Namespace) -> int:
     ensure_dirs()
-    rd = today_jst().isoformat()
+    today = today_jst()
+    rd = today.isoformat()
     log_path = _setup_logging(rd)
     logging.info("run-daily start (JST date=%s) root=%s", rd, PROJECT_ROOT)
     init_db()
@@ -65,12 +67,46 @@ def cmd_run_daily(args: argparse.Namespace) -> int:
     )
     with db_session() as conn:
         apply_all(conn)
-        report_path, data = write_report(conn, report_date=date.fromisoformat(rd))
-    logging.info("report written: %s events=%s distinctive=%s", report_path, len(data.events), len(data.distinctive))
+        report_path, data = write_report(conn, report_date=today)
+    logging.info(
+        "report written: %s events=%s distinctive=%s",
+        report_path,
+        len(data.events),
+        len(data.distinctive),
+    )
+
+    catchup = None
+    if not args.skip_catchup:
+        catchup = run_yesterday_catchup(
+            now_jst_date=today,
+            force=bool(args.force_catchup),
+            lookback=max(args.lookback, 16),
+        )
+        if catchup.needed:
+            logging.info(
+                "catch-up done yesterday=%s regenerated=%s reinested=%s reasons=%s",
+                catchup.yesterday.isoformat(),
+                catchup.report_regenerated,
+                catchup.reinested,
+                catchup.reasons,
+            )
+            print(
+                f"CATCHUP yesterday={catchup.yesterday.isoformat()} "
+                f"needed=1 report={catchup.report_path} "
+                f"reinested={','.join(catchup.reinested) or '-'}"
+            )
+        else:
+            print(f"CATCHUP yesterday={catchup.yesterday.isoformat()} needed=0")
+    else:
+        print("CATCHUP skipped")
+
     print(f"OK report={report_path}")
     print(f"log={log_path}")
     print(f"db={DB_PATH}")
-    if summary["failed"]:
+    failed = list(summary["failed"])
+    if catchup and catchup.failed:
+        failed.extend(catchup.failed)
+    if failed:
         return 2
     return 0
 
@@ -165,6 +201,8 @@ def cmd_discord_summary(args: argparse.Namespace) -> int:
         webhook_url=args.webhook,
         post=bool(args.post),
         out_path=out,
+        skip_if_posted=not bool(args.force_post),
+        force_post=bool(args.force_post),
     )
     # Always print for Actions log / piping (safe: no secret)
     print(text, end="" if text.endswith("\n") else "\n")
@@ -178,11 +216,24 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("init-db", help="Create SQLite schema")
     s.set_defaults(func=cmd_init_db)
 
-    s = sub.add_parser("run-daily", help="Ingest Challenge/Preliminary + write daily report")
+    s = sub.add_parser(
+        "run-daily",
+        help="Ingest Challenge/Preliminary + write daily report (+ yesterday catch-up)",
+    )
     s.add_argument("--lookback", type=int, default=8, help="Max listing events to consider")
     s.add_argument("--max-events", type=int, default=None, help="Limit ingest count (smoke tests)")
     s.add_argument("--force", action="store_true", help="Refetch even if cache exists")
     s.add_argument("--offline-listing", type=str, default=None, help="Use local listing HTML")
+    s.add_argument(
+        "--skip-catchup",
+        action="store_true",
+        help="Skip yesterday (JST) incomplete/missing-report catch-up",
+    )
+    s.add_argument(
+        "--force-catchup",
+        action="store_true",
+        help="Always regenerate yesterday's report (still one JST day lookback)",
+    )
     s.set_defaults(func=cmd_run_daily)
 
     s = sub.add_parser("apply-overrides", help="Apply aliases/overrides CSV and regenerate report")
@@ -229,6 +280,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--post",
         action="store_true",
         help="POST to Discord (uses --webhook or env DISCORD_WEBHOOK_URL; skips with warning if missing)",
+    )
+    s.add_argument(
+        "--force-post",
+        action="store_true",
+        help="Post even if data/discord_posted.json already has this mode+date",
     )
     s.add_argument("--webhook", type=str, default=None, help="Webhook URL (prefer Secret/env)")
     s.set_defaults(func=cmd_discord_summary)

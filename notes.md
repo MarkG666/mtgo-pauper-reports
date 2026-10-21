@@ -33,10 +33,14 @@
 
 ## 運用
 
-- **本線:** GitHub Actions（毎日 02:00 UTC = 11:00 JST）→ Discord Webhook（案2）
-- 週次ダイジェスト: 月曜 02:30 UTC
+- **本線:** GitHub Actions → Discord Webhook（案2）
+  - 米DST（EDT）: 毎日 **13:00 JST** = 04:00 UTC
+  - 米標準時（EST）: 毎日 **14:00 JST** = 05:00 UTC
+  - cron は 04:00/05:00 UTC 両方＋`schedule_gate`（`America/New_York`）
+- 週次ダイジェスト: 月曜・日次の **+30分**（04:30 / 05:30 UTC）
+- 前日キャッチアップ: 不完全イベント or 欠落 md なら JST 昨日を再取得（Discord は `data/discord_posted.json` で重複防止）
 - 手順: [SETUP.md](./SETUP.md)
-- 任意のローカル: Windows タスクスケジューラ 11:00 JST → `run-daily.bat`
+- 任意のローカル: Windows タスクスケジューラ（13:00 JST 目安）→ `run-daily.bat`
 - ストア FS 不安定時: `PAUPER_META_DATA_DIR` で作業 DB を `/tmp` 等へ
 - Backfill: `python -m pauper_meta backfill --since 2025-09-25`
 - 欠落 md の穴埋めメモ: ストア `docs/report-backfill-note.md`（one-shot `report --date`）

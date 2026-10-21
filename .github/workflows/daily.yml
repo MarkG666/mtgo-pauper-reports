@@ -1,11 +1,18 @@
 # Daily Pauper meta + Discord summary (案2)
-# 02:00 UTC = 11:00 JST / Monday 02:30 UTC = weekly digest
+#
+# Wall clocks (JST; Japan has no DST):
+#   US Eastern DST (EDT): 13:00 JST = 04:00 UTC
+#   US Eastern standard (EST): 14:00 JST = 05:00 UTC
+# Crons fire at both hours; schedule_gate picks the correct one via America/New_York.
+# Weekly digest: Monday, same UTC hour as daily + 30 minutes (04:30 / 05:30).
 name: Pauper daily
 
 on:
   schedule:
-    - cron: "0 2 * * *"      # every day 02:00 UTC
-    - cron: "30 2 * * 1"     # Monday 02:30 UTC — weekly digest
+    - cron: "0 4 * * *"       # daily candidate (EDT → 13:00 JST)
+    - cron: "0 5 * * *"       # daily candidate (EST → 14:00 JST)
+    - cron: "30 4 * * 1"      # Monday weekly candidate (+30m after EDT daily)
+    - cron: "30 5 * * 1"      # Monday weekly candidate (+30m after EST daily)
   workflow_dispatch:
     inputs:
       post_weekly:
@@ -42,18 +49,50 @@ jobs:
           python -m pip install -U pip
           pip install -r requirements.txt
 
+      - name: DST schedule gate
+        id: gate
+        env:
+          PYTHONPATH: src
+        run: |
+          SCHEDULE="${{ github.event.schedule }}"
+          FORCE=0
+          KIND=daily
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            FORCE=1
+          fi
+          case "$SCHEDULE" in
+            "30 4 * * 1"|"30 5 * * 1") KIND=weekly ;;
+          esac
+          if [ "$FORCE" = "1" ]; then
+            python -m pauper_meta.schedule_gate --kind "$KIND" --force
+          else
+            python -m pauper_meta.schedule_gate --kind "$KIND"
+          fi
+          echo "Gate schedule='$SCHEDULE' kind=$KIND force=$FORCE"
+
       - name: Detect job mode
         id: mode
+        env:
+          GATE_RUN: ${{ steps.gate.outputs.should_run }}
         run: |
-          # schedule cron string is in github.event.schedule when triggered by cron
           SCHEDULE="${{ github.event.schedule }}"
           WEEKLY=0
           DAILY=1
-          if [ "$SCHEDULE" = "30 2 * * 1" ]; then
-            WEEKLY=1
-            # Monday weekly slot: digest only (daily already ran at 02:00)
-            DAILY=0
+          # Wrong DST hour → no-op success (both 04:00 and 05:00 fire daily)
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$GATE_RUN" != "1" ]; then
+            echo "Skipping: DST gate said should_run=$GATE_RUN for schedule='$SCHEDULE'"
+            echo "run_daily=0" >> "$GITHUB_OUTPUT"
+            echo "run_weekly=0" >> "$GITHUB_OUTPUT"
+            echo "skipped_dst=1" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          case "$SCHEDULE" in
+            "30 4 * * 1"|"30 5 * * 1")
+              WEEKLY=1
+              # Monday weekly slot: digest only (daily already ran at :00)
+              DAILY=0
+              ;;
+          esac
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             DAILY=1
             if [ "${{ inputs.post_weekly }}" = "true" ]; then
@@ -65,9 +104,10 @@ jobs:
           fi
           echo "run_daily=$DAILY" >> "$GITHUB_OUTPUT"
           echo "run_weekly=$WEEKLY" >> "$GITHUB_OUTPUT"
-          echo "Detected run_daily=$DAILY run_weekly=$WEEKLY schedule='$SCHEDULE'"
+          echo "skipped_dst=0" >> "$GITHUB_OUTPUT"
+          echo "Detected run_daily=$DAILY run_weekly=$WEEKLY schedule='$SCHEDULE' gate=$GATE_RUN"
 
-      - name: Run daily ingest + report
+      - name: Run daily ingest + report (+ yesterday catch-up)
         if: steps.mode.outputs.run_daily == '1'
         env:
           PYTHONPATH: src
@@ -78,7 +118,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/pauper.sqlite reports/
+          git add data/pauper.sqlite reports/ data/discord_posted.json
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
@@ -87,21 +127,30 @@ jobs:
             echo "Pushed DB + reports"
           fi
 
-      - name: Discord daily summary
+      - name: Discord daily summary (today + yesterday; deduped)
         if: steps.mode.outputs.run_daily == '1'
         env:
           PYTHONPATH: src
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
-            echo "::warning::DISCORD_WEBHOOK_URL secret is not set — skipping Discord post (job continues)"
-            python -m pauper_meta discord-summary --mode daily --out /tmp/discord-daily.txt
-          else
-            python -m pauper_meta discord-summary --mode daily --post --out /tmp/discord-daily.txt
-          fi
-          echo "----- daily summary -----"
-          cat /tmp/discord-daily.txt
+          TODAY=$(python -c "from pauper_meta.report_daily import today_jst; print(today_jst().isoformat())")
+          YESTERDAY=$(python -c "from datetime import timedelta; from pauper_meta.report_daily import today_jst; print((today_jst()-timedelta(days=1)).isoformat())")
+          post_one() {
+            local DATE="$1"
+            local OUT="/tmp/discord-daily-$DATE.txt"
+            if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+              echo "::warning::DISCORD_WEBHOOK_URL secret is not set — skipping Discord post for $DATE"
+              python -m pauper_meta discord-summary --mode daily --date "$DATE" --out "$OUT"
+            else
+              python -m pauper_meta discord-summary --mode daily --date "$DATE" --post --out "$OUT"
+            fi
+            echo "----- daily summary $DATE -----"
+            cat "$OUT"
+          }
+          post_one "$TODAY"
+          # Catch-up may post yesterday once if never posted (discord_posted.json dedupe)
+          post_one "$YESTERDAY"
 
       - name: Discord weekly digest
         if: steps.mode.outputs.run_weekly == '1'
@@ -118,3 +167,18 @@ jobs:
           fi
           echo "----- weekly summary -----"
           cat /tmp/discord-weekly.txt
+
+      - name: Commit Discord posted tracker
+        if: steps.mode.outputs.run_daily == '1' || steps.mode.outputs.run_weekly == '1'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/discord_posted.json
+          if git diff --staged --quiet; then
+            echo "No discord_posted.json changes"
+          else
+            # Re-pull in case the earlier push raced; keep ours for tracker
+            git pull --rebase --autostash origin main || true
+            git commit -m "chore: discord posted tracker $(date -u +%Y-%m-%d)" || true
+            git push || echo "::warning::push discord tracker failed (non-fatal)"
+          fi
