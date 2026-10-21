@@ -1,0 +1,103 @@
+# Phase 2 Paper spike — MTGDecks ≥50 scan (separate from Challenge daily)
+#
+# Live Playwright against mtgdecks.net is often blocked by Cloudflare on
+# ubuntu-latest. Workflow still:
+#   1) tries live fetch
+#   2) falls back to fixtures/manual HTML drops under fixtures/mtgdecks/
+#   3) writes reports/paper/weekly/YYYY-Www.md
+#   4) Discord-posts newly ingested events (same DISCORD_WEBHOOK_URL; optional later channel)
+#
+# Schedule: every 2 days at 15:00 UTC (~00:00 JST) — independent of Challenge cron.
+name: Pauper paper
+
+on:
+  schedule:
+    - cron: "0 15 */2 * *"
+  workflow_dispatch:
+    inputs:
+      fixtures_only:
+        description: "Skip live fetch; use fixtures/mtgdecks only"
+        type: boolean
+        default: false
+      post_discord:
+        description: "POST new paper events to Discord"
+        type: boolean
+        default: true
+      force:
+        description: "Reingest existing paper events"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pauper-paper
+  cancel-in-progress: false
+
+jobs:
+  paper:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run paper scan + weekly report
+        id: paper
+        env:
+          PYTHONPATH: src
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          ARGS=()
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.fixtures_only }}" = "true" ]; then
+            ARGS+=(--fixtures)
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            ARGS+=(--force)
+          fi
+          # Discord: default on for schedule; dispatch respects input
+          POST=1
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.post_discord }}" != "true" ]; then
+            POST=0
+          fi
+          if [ "$POST" = "1" ]; then
+            ARGS+=(--post-discord)
+          else
+            ARGS+=(--discord-dry-run)
+          fi
+          set +e
+          python -m pauper_meta run-paper "${ARGS[@]}"
+          CODE=$?
+          set -e
+          echo "run_paper_exit=$CODE" >> "$GITHUB_OUTPUT"
+          # CF-only failure with no events → soft warning; fixtures path should exit 0
+          if [ "$CODE" -ne 0 ]; then
+            echo "::warning::run-paper exited $CODE (often Cloudflare). Check spike notes / fixtures fallback."
+          fi
+
+      - name: Commit paper DB meta + weekly reports
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/pauper.sqlite data/paper_meta/ data/discord_posted.json reports/paper/ || true
+          if git diff --staged --quiet; then
+            echo "No paper artifacts to commit"
+          else
+            git pull --rebase --autostash origin "${{ github.ref_name }}" || true
+            git commit -m "chore: paper weekly update $(date -u +%Y-%m-%d)" || true
+            git push || echo "::warning::paper push failed (non-fatal)"
+          fi
