@@ -46,6 +46,8 @@ SIGNATURES: list[tuple[str, list[tuple[str, int]]]] = [
             ("Contaminated Aquifer", 2),
         ],
     ),
+    # Faeries family base score (color via _resolve_faeries_family).
+    # Dimir / Izzet / Mono-Blue / Grixis share Sprite+Ninja core; black ≠ red.
     (
         "Dimir Faeries",
         [
@@ -54,6 +56,18 @@ SIGNATURES: list[tuple[str, list[tuple[str, int]]]] = [
             ("Faerie Seer", 3),
             ("Moon-Cursed Cleric", 2),
             ("Snuff Out", 2),
+            ("Counterspell", 2),
+        ],
+    ),
+    (
+        "Izzet Faeries",
+        [
+            ("Ninja of the Deep Hours", 5),
+            ("Spellstutter Sprite", 5),
+            ("Faerie Seer", 3),
+            ("Skred", 3),
+            ("Lightning Bolt", 2),
+            ("Crimson Fleet Commodore", 2),
             ("Counterspell", 2),
         ],
     ),
@@ -382,6 +396,67 @@ _HAWK_FAMILY = frozenset(
     {"Boros Hawk", "Mardu Hawk", "Jeskai Hawk", "4c Hawk", "Naya Hawk", "5c Hawk"}
 )
 
+# Faeries color naming (mainboard). Sneaky Snacker alone does not add red
+# (same idea as Hawk; MTGO sometimes tags Snacker oddly).
+_FAERIES_BLACK_SPLASH = frozenset(
+    {
+        "Snuff Out",
+        "Cast Down",
+        "Thorn of the Black Rose",
+        "Suffocating Fumes",
+        "Extract a Confession",
+        "Mukotai Ambusher",
+        "Agony Warp",
+        "Baleful Strix",
+        "Arms of Hadar",
+        "Gurmag Angler",
+        "Cut Down",
+        "Okiba-Gang Shinobi",
+        "Duress",
+        "Chainer's Edict",
+        "Echoing Decay",
+        "Tithing Blade",
+        "Unexpected Fangs",
+        "Dihada's Ploy",
+        "Mob Lookout",
+        "Peppersmoke",
+        "Blood Fountain",
+        "Refurbished Familiar",
+        "Oroku Saki, Shredder Rising",
+        "Wekhdu, Midnight Hunter",
+        "Troll of Khazad-dum",
+        "Troll of Khazad-dûm",
+    }
+)
+_FAERIES_RED_SPLASH = frozenset(
+    {
+        "Skred",
+        "Lightning Bolt",
+        "Crimson Fleet Commodore",
+        "Cast into the Fire",
+        "Galvanic Discharge",
+        "Suplex",
+        "Fire/Ice",
+        "Fire // Ice",
+        "Guttersnipe",
+        "Oliphaunt",
+        "Abandon Attachments",
+        "Breath Weapon",
+        "Vandalblast",
+        "Pyroblast",
+        "Red Elemental Blast",
+        "Fiery Cannonade",
+        "Electrickery",
+        "Gorilla Shaman",
+        "Smash to Smithereens",
+        "Lava Dart",
+        "Chain Lightning",
+    }
+)
+_FAERIES_FAMILY = frozenset(
+    {"Dimir Faeries", "Izzet Faeries", "Mono-Blue Faeries", "Grixis Faeries"}
+)
+
 
 @dataclass
 class Classification:
@@ -490,6 +565,48 @@ def _resolve_ruby_storm(counts: Counter[str], best_name: str, scores: list[tuple
     return best_name
 
 
+def _is_faeries_core(counts: Counter[str]) -> bool:
+    """Spellstutter Sprite package with ninja / seer support."""
+    if counts.get("Spellstutter Sprite", 0) < 2:
+        return False
+    return (
+        counts.get("Ninja of the Deep Hours", 0) >= 1
+        or counts.get("Faerie Seer", 0) >= 2
+        or counts.get("Moon-Circuit Hacker", 0) >= 1
+    )
+
+
+def _faeries_variant_name(counts: Counter[str]) -> str:
+    """Split Faeries by black/red identity cards (not by shared Sprite/Ninja core).
+
+    - black only → Dimir Faeries
+    - red only → Izzet Faeries
+    - both → Grixis Faeries
+    - neither → Mono-Blue Faeries
+    """
+    has_b = any(counts.get(c, 0) > 0 for c in _FAERIES_BLACK_SPLASH)
+    has_r = any(counts.get(c, 0) > 0 for c in _FAERIES_RED_SPLASH)
+    if has_b and has_r:
+        return "Grixis Faeries"
+    if has_b:
+        return "Dimir Faeries"
+    if has_r:
+        return "Izzet Faeries"
+    return "Mono-Blue Faeries"
+
+
+def _resolve_faeries_family(counts: Counter[str], best_name: str, scores: list[tuple[str, int]]) -> str:
+    """Apply color-split Faeries names when Sprite core is present."""
+    if _is_faeries_core(counts):
+        return _faeries_variant_name(counts)
+    if best_name in _FAERIES_FAMILY:
+        for name, score in scores:
+            if name not in _FAERIES_FAMILY and score >= 8:
+                return name
+        return "Unknown"
+    return best_name
+
+
 def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     counts = Counter(main)
     scores: list[tuple[str, int]] = []
@@ -519,18 +636,25 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
             return Classification(
                 archetype="Ruby Storm", score=max(ruby_score, 8), runners_up=scores[:3]
             )
+        if _is_faeries_core(counts):
+            name = _faeries_variant_name(counts)
+            fairy_score = max(
+                (s for n, s in scores if n in _FAERIES_FAMILY),
+                default=0,
+            )
+            return Classification(archetype=name, score=max(fairy_score, 8), runners_up=scores[:3])
         return Classification(archetype="Unknown", score=scores[0][1] if scores else 0, runners_up=scores[:3])
     best_name, best_score = scores[0]
-    # Disambiguate Dimir Faeries vs Dimir Control / Mono-Blue
-    if best_name == "Dimir Control" and counts.get("Spellstutter Sprite", 0) >= 2:
-        best_name = "Dimir Faeries"
-    if best_name == "U Terror" and counts.get("Spellstutter Sprite", 0) >= 2:
+    # Promote Sprite packages that scored as Control/Terror into Faeries family
+    # (final Dimir/Izzet/Mono-Blue/Grixis name comes from _resolve_faeries_family).
+    if best_name in ("Dimir Control", "U Terror") and counts.get("Spellstutter Sprite", 0) >= 2:
         best_name = "Dimir Faeries"
     if best_name == "Burn" and counts.get("Grab the Prize", 0) + counts.get("Sneaky Snacker", 0) >= 3:
         best_name = "Mono-Red Madness"
     best_name = _resolve_mono_red_aggro(counts, best_name)
     best_name = _resolve_hawk_family(counts, best_name, scores)
     best_name = _resolve_ruby_storm(counts, best_name, scores)
+    best_name = _resolve_faeries_family(counts, best_name, scores)
     return Classification(archetype=best_name, score=best_score, runners_up=scores[1:4])
 
 
