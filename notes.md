@@ -25,6 +25,11 @@
 - メタ概要の **Top8 列** = `finish_rank ≤ 8` の本数（欠落時はブラケット出場でフォールバック）。
 - 安価な検証: 決勝の優勝/準優勝が finish_rank 1/2 と一致するか（追加 HTTP なし）。
 
+## Discord 日次 Top8
+
+- 形式: `準優勝: player — Archetype（eliminatorに敗北）`
+- 優勝は括弧なし。敗因はレポート表の `eliminated_by` からプレイヤー名だけ抜く。
+
 ## 運用
 
 - **本線:** GitHub Actions（毎日 02:00 UTC = 11:00 JST）→ Discord Webhook（案2）
@@ -33,3 +38,4 @@
 - 任意のローカル: Windows タスクスケジューラ 11:00 JST → `run-daily.bat`
 - ストア FS 不安定時: `PAUPER_META_DATA_DIR` で作業 DB を `/tmp` 等へ
 - Backfill: `python -m pauper_meta backfill --since 2025-09-25`
+- 欠落 md の穴埋めメモ: ストア `docs/report-backfill-note.md`（one-shot `report --date`）

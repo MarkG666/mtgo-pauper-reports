@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .db import db_session, init_db
 from .paths import REPORTS_DIR, ensure_dirs
-from .report_daily import DailyReportData, build_report_data, today_jst
+from .report_daily import DailyReportData, Top8Entry, build_report_data, today_jst
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +52,25 @@ def _truncate(text: str, limit: int = MAX_CHARS) -> str:
     return cut + "\n…（省略）"
 
 
+def _eliminator_player(eliminated_by: str) -> str | None:
+    """Report 敗因 is `player（archetype）` or `—`; Discord uses player only."""
+    text = (eliminated_by or "").strip()
+    if not text or text == "—":
+        return None
+    return text.split("（", 1)[0].strip() or None
+
+
+def _fmt_top8_line(row: Top8Entry) -> str:
+    """例: `準優勝: seasonofmists — Grixis Affinity（yahakaraに敗北）`（優勝は括弧なし）."""
+    line = f"{row.place_label}: {row.player} — {row.archetype}"
+    if row.finish_rank == 1:
+        return f"- {line}"
+    elim = _eliminator_player(row.eliminated_by)
+    if elim:
+        line = f"{line}（{elim}に敗北）"
+    return f"- {line}"
+
+
 def build_daily_summary(
     data: DailyReportData,
     *,
@@ -77,7 +96,7 @@ def build_daily_summary(
         if bracket_ev.top8_bracket:
             lines.append(f"**Top8** — {bracket_ev.name}")
             for row in bracket_ev.top8_bracket:
-                lines.append(f"- {row.place_label}: {row.player} — {row.archetype}")
+                lines.append(_fmt_top8_line(row))
             lines.append("")
 
     if data.meta_overview:
