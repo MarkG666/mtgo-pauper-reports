@@ -16,6 +16,13 @@
 - W 色ラベルは変更なし
 - 今後: チャットで「A→Bにして」、または `aliases.csv` / `overrides.csv` 編集後に `apply-overrides`（全件再分類あり）
 
+## 順位 / Top8
+
+- Challenge の **finish_rank 1–8 はブラケット（SE）結果が正**。`final_rank` 欠落時にスイス Top8 を優勝扱いしない。
+- 9位以下はスイス（または `final_rank` の 9+）。ingest 時にブラケットから合成し、レポート生成時にも null なら補完。
+- メタ概要の **Top8 列** = `finish_rank ≤ 8` の本数（欠落時はブラケット出場でフォールバック）。
+- 安価な検証: 決勝の優勝/準優勝が finish_rank 1/2 と一致するか（追加 HTTP なし）。
+
 ## 運用
 
 - **本線:** GitHub Actions（毎日 02:00 UTC = 11:00 JST）→ Discord Webhook（案2）
