@@ -34,6 +34,24 @@ ROUND_NAMES = {
 logger = logging.getLogger(__name__)
 
 
+def mtgo_player_deck_url(event_url: str | None, player: str | None) -> str | None:
+    """Per-deck deep link on an MTGO event decklist page.
+
+    MTGO renders each deck as ``id="deck_<player>"`` where whitespace in the
+    player name is replaced with ``_`` (see ``createPlayerAnchor`` on mtgo.com).
+    There is no separate per-deck path; ``decktournamentid`` is not in the URL.
+    """
+    if not event_url or not player:
+        return None
+    base = str(event_url).strip().split("#", 1)[0]
+    if not base:
+        return None
+    if not base.endswith("/"):
+        base += "/"
+    anchor = "deck_" + re.sub(r"\s", "_", str(player))
+    return f"{base}#{anchor}"
+
+
 @dataclass
 class ListingEvent:
     slug: str

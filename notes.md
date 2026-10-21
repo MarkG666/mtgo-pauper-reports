@@ -29,8 +29,9 @@
 
 ## Discord 日次 Top8
 
-- 形式: `準優勝: player — Archetype（eliminatorに敗北）`
+- 形式: `準優勝: player — Archetype（eliminatorに敗北） <mtgo-deck-url>`
 - 優勝は括弧なし。敗因はレポート表の `eliminated_by` からプレイヤー名だけ抜く。
+- Top8 デッキ URL は MTGO イベントページの `#deck_<player>`（空白→`_`）。文字数超過時は特徴リスト URL 省略 → メタ行削減 → イベント URL 1本、の順で縮める。
 
 ## 運用
 
