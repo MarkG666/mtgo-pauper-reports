@@ -20,6 +20,7 @@ from .distinctive import (
     select_distinctive,
 )
 from .goldfish_links import get_resolver
+from .parse_mtgo import mtgo_player_deck_url
 from .paths import CONFIG_DIR, REPORTS_DIR, ensure_dirs
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -63,6 +64,8 @@ class Top8Entry:
     player: str
     archetype: str
     eliminated_by: str = "—"
+    # Per-deck MTGO deep link (event URL + #deck_<player>); None if unavailable
+    deck_url: str | None = None
 
 
 @dataclass
@@ -557,6 +560,11 @@ def _bracket_matches(conn: sqlite3.Connection, event_id: str) -> list[BracketMat
 
 def _top8_bracket(conn: sqlite3.Connection, event_id: str) -> list[Top8Entry]:
     elim = _eliminators(conn, event_id)
+    ev_row = conn.execute(
+        "SELECT source_url FROM events WHERE id = ?",
+        (event_id,),
+    ).fetchone()
+    event_url = (ev_row["source_url"] if ev_row else None) or ""
     rows = conn.execute(
         """
         SELECT * FROM decks
@@ -597,6 +605,7 @@ def _top8_bracket(conn: sqlite3.Connection, event_id: str) -> list[Top8Entry]:
                 player=player,
                 archetype=_deck_display(conn, r),
                 eliminated_by="—" if rank == 1 else elim.get(player, "—"),
+                deck_url=mtgo_player_deck_url(event_url, player),
             )
         )
     return out
@@ -822,6 +831,11 @@ def build_report_data(
         "未分類デッキはアーキ名の代わりに **色アイデンティティ**"
         "（W/U/B/R/G、複数色は WUBRG 順、無色は C）を表示。"
     )
+    notes.append(
+        "Top8 のプレイヤー／アーキタイプは **mtgo.com の個別デッキアンカー**"
+        "（`#deck_<player>`、空白は `_`）へリンク。"
+        "特徴リストのリンク方針（MTGGoldfish 優先）は変更なし。"
+    )
 
     distinctive = select_distinctive(
         _load_deck_payloads(conn, event_ids),
@@ -957,8 +971,14 @@ def render_markdown(data: DailyReportData) -> str:
         lines.append("| 結果 | プレイヤー | アーキタイプ | 敗因 |")
         lines.append("|---|---|---|---|")
         for e in ev.top8_bracket:
+            if e.deck_url:
+                player_cell = f"[{e.player}]({e.deck_url})"
+                arch_cell = f"[{e.archetype}]({e.deck_url})"
+            else:
+                player_cell = e.player
+                arch_cell = e.archetype
             lines.append(
-                f"| {e.place_label} | {e.player} | {e.archetype} | {e.eliminated_by} |"
+                f"| {e.place_label} | {player_cell} | {arch_cell} | {e.eliminated_by} |"
             )
         lines.append("")
 
