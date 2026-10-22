@@ -79,18 +79,21 @@ Windows 向けに `run-daily.bat` もあります（タスク スケジューラ
 
 ---
 
-## Paper（Phase 2 スパイク）
+## Paper（Phase 2）
 
-MTGDecks の **参加 50人以上**の Paper 大会を別ジョブで拾い、独立の週次 md にまとめます（Challenge メタ％には合算しません）。
+**本線:** 人が MTGDecks の大会 **URL または保存 HTML** を渡す → 分析 → 週次 md → Discord。  
+**発見:** Melee 等から「50人以上がありそう」を薄いアラートに出す（MTGDecks 一覧の自動巡回はしない）。
 
 | 項目 | 内容 |
 |------|------|
-| Workflow | `.github/workflows/paper.yml`（Challenge 日次とは分離） |
-| 成果物 | `reports/paper/weekly/YYYY-Www.md` |
-| コマンド | `python -m pauper_meta run-paper`（`--fixtures` でオフライン検証） |
-| 手動ハンドオフ | `python -m pauper_meta run-paper-manual --html … --source-url …`（URL ライブは CF で失敗しうる） |
-| Discord | 新規 50+ 大会ごとに投稿（既存 `DISCORD_WEBHOOK_URL`。別chは運用次第） |
-| Cloudflare | Actions 上のヘッドレス取得は阻まれやすい → フィクスチャ／PC 手動ドロップ。詳細は PR とストアの spike notes |
+| Workflow | `.github/workflows/paper.yml`（隔日 discover / 手動 URL・fixtures） |
+| 週次成果物 | `reports/paper/weekly/YYYY-Www.md` |
+| 候補アラート | `reports/paper/alerts/YYYY-MM-DD.md` |
+| 発見 | `python -m pauper_meta discover-paper`（Melee ≥50 が主。CF 回避なし） |
+| 手動分析 | `python -m pauper_meta run-paper-manual --html … --source-url …` |
+| Windows 補助 | `scripts\run-paper-manual.bat` / `drop-paper-html.bat` / `run-paper-discover.bat` |
+| Discord | 新規分析イベント＋新規発見アラート（既存 `DISCORD_WEBHOOK_URL`） |
+| Cloudflare | MTGDecks ライブ一覧は無効（`allow_live_listing: false`）。PC の通常ブラウザでページ保存 |
 
 ---
 

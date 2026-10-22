@@ -1,0 +1,9 @@
+{
+  "notes": [
+    "手動で追いたい Melee 大会 ID を melee_ids に追加する。",
+    "discover-paper が View ページから人数を読み、≥min_players なら alerts に載せる。",
+    "name_keywords は将来用（現状未使用）。"
+  ],
+  "melee_ids": [],
+  "name_keywords": []
+}

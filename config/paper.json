@@ -8,5 +8,7 @@
   "skip_mtgo_named": true,
   "skip_unknown_player_count": true,
   "lookback_listing_rows": 80,
-  "discord_username": "Pauper Paper"
+  "discord_username": "Pauper Paper",
+  "allow_live_listing": false,
+  "discovery_melee_date_windows": ["LastMonth", "ThisWeek", "Last7Days"]
 }

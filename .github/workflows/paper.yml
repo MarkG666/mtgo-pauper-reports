@@ -1,30 +1,38 @@
-# Phase 2 Paper spike — MTGDecks ≥50 scan (separate from Challenge daily)
+# Phase 2 Paper — discovery + manual handoff (no MTGDecks live listing crawl)
 #
-# Live Playwright against mtgdecks.net is often blocked by Cloudflare on
-# ubuntu-latest. Workflow still:
-#   1) tries live fetch
-#   2) falls back to fixtures/manual HTML drops under fixtures/mtgdecks/
-#   3) writes reports/paper/weekly/YYYY-Www.md
-#   4) Discord-posts newly ingested events (same DISCORD_WEBHOOK_URL; optional later channel)
+# Cloudflare blocks Actions/headless against mtgdecks.net. This workflow:
+#   1) discover-paper: Melee (≥50) + Goldfish name hints → reports/paper/alerts/
+#   2) optional Discord ping for new discovery keys
+#   3) optional run-paper-manual when workflow_dispatch provides URLs / uses drops
+#   4) fixtures path for offline E2E (no live MTGDecks)
 #
-# Schedule: every 2 days at 15:00 UTC (~00:00 JST) — independent of Challenge cron.
+# Full analysis still needs a human MTGDecks URL or saved HTML (run-paper-manual).
 name: Pauper paper
 
 on:
   schedule:
+    # Every 2 days 15:00 UTC (~00:00 JST) — discovery only
     - cron: "0 15 */2 * *"
   workflow_dispatch:
     inputs:
-      fixtures_only:
-        description: "Skip live fetch; use fixtures/mtgdecks only"
-        type: boolean
-        default: false
+      mode:
+        description: "discover | manual | fixtures"
+        type: choice
+        options:
+          - discover
+          - manual
+          - fixtures
+        default: discover
+      event_urls:
+        description: "MTGDecks event URL(s), space-separated (manual mode)"
+        type: string
+        default: ""
       post_discord:
-        description: "POST new paper events to Discord"
+        description: "POST Discord (discovery alerts and/or new analyzed events)"
         type: boolean
         default: true
       force:
-        description: "Reingest existing paper events"
+        description: "Reingest / force Discord dedupe"
         type: boolean
         default: false
 
@@ -52,24 +60,23 @@ jobs:
         run: |
           python -m pip install -U pip
           pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
+          # Playwright only needed for optional manual --url live try (often CF-blocked).
+          # Skip browser install on discover/fixtures to save time; install when manual.
+          MODE="${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'discover' }}"
+          if [ "$MODE" = "manual" ]; then
+            python -m playwright install --with-deps chromium || echo "::warning::playwright install failed"
+          fi
 
-      - name: Run paper scan + weekly report
-        id: paper
+      - name: Discover large Pauper candidates
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'discover') }}
+        id: discover
         env:
           PYTHONPATH: src
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
         run: |
-          ARGS=()
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.fixtures_only }}" = "true" ]; then
-            ARGS+=(--fixtures)
-          fi
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
-            ARGS+=(--force)
-          fi
-          # Discord: default on for schedule; dispatch respects input
+          ARGS=(discover-paper)
           POST=1
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.post_discord }}" != "true" ]; then
             POST=0
@@ -79,25 +86,88 @@ jobs:
           else
             ARGS+=(--discord-dry-run)
           fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            ARGS+=(--force-discord)
+          fi
           set +e
-          python -m pauper_meta run-paper "${ARGS[@]}"
+          python -m pauper_meta "${ARGS[@]}"
           CODE=$?
           set -e
-          echo "run_paper_exit=$CODE" >> "$GITHUB_OUTPUT"
-          # CF-only failure with no events → soft warning; fixtures path should exit 0
+          echo "discover_exit=$CODE" >> "$GITHUB_OUTPUT"
           if [ "$CODE" -ne 0 ]; then
-            echo "::warning::run-paper exited $CODE (often Cloudflare). Check spike notes / fixtures fallback."
+            echo "::warning::discover-paper exited $CODE"
           fi
 
-      - name: Commit paper DB meta + weekly reports
+      - name: Manual URL / HTML handoff
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'manual' }}
+        id: manual
+        env:
+          PYTHONPATH: src
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          ARGS=(run-paper-manual)
+          URLS="${{ inputs.event_urls }}"
+          if [ -n "$URLS" ]; then
+            for u in $URLS; do
+              ARGS+=(--url "$u")
+            done
+          fi
+          # Also pick up any dropped HTML in fixtures or data/raw/paper_drops
+          if ls fixtures/mtgdecks/event-*.html >/dev/null 2>&1; then
+            ARGS+=(--html-dir fixtures/mtgdecks)
+          fi
+          if ls data/raw/paper_drops/event-*.html >/dev/null 2>&1; then
+            ARGS+=(--html-dir data/raw/paper_drops)
+          fi
+          if [ "${{ inputs.force }}" = "true" ]; then
+            ARGS+=(--force)
+          fi
+          if [ "${{ inputs.post_discord }}" = "true" ]; then
+            ARGS+=(--post-discord)
+          else
+            ARGS+=(--discord-dry-run)
+          fi
+          # Prefer HTML when present; URL live try is best-effort
+          set +e
+          python -m pauper_meta "${ARGS[@]}"
+          CODE=$?
+          set -e
+          echo "manual_exit=$CODE" >> "$GITHUB_OUTPUT"
+          if [ "$CODE" -ne 0 ]; then
+            echo "::warning::run-paper-manual exited $CODE (CF on --url is expected; use saved HTML)"
+          fi
+
+      - name: Fixtures offline ingest
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'fixtures' }}
+        env:
+          PYTHONPATH: src
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          ARGS=(run-paper --fixtures --offline-only)
+          if [ "${{ inputs.force }}" = "true" ]; then
+            ARGS+=(--force)
+          fi
+          if [ "${{ inputs.post_discord }}" = "true" ]; then
+            ARGS+=(--post-discord)
+          else
+            ARGS+=(--discord-dry-run)
+          fi
+          python -m pauper_meta "${ARGS[@]}"
+
+      - name: Commit paper alerts / reports / DB
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/pauper.sqlite data/paper_meta/ data/discord_posted.json reports/paper/ || true
+          git add data/pauper.sqlite data/paper_meta/ data/discord_posted.json \
+            reports/paper/ || true
           if git diff --staged --quiet; then
             echo "No paper artifacts to commit"
           else
             git pull --rebase --autostash origin "${{ github.ref_name }}" || true
-            git commit -m "chore: paper weekly update $(date -u +%Y-%m-%d)" || true
+            git commit -m "chore: paper discovery/update $(date -u +%Y-%m-%d)" || true
             git push || echo "::warning::paper push failed (non-fatal)"
           fi

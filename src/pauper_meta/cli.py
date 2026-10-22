@@ -1,4 +1,4 @@
-"""CLI entry: run-daily / run-paper / run-paper-manual / apply-overrides / report / init-db / player-stats / discord-*."""
+"""CLI entry: run-daily / run-paper / run-paper-manual / discover-paper / …"""
 
 from __future__ import annotations
 
@@ -11,7 +11,12 @@ from pathlib import Path
 from .backfill import run_backfill
 from .catchup import run_yesterday_catchup
 from .db import db_session, init_db
-from .discord_summary import generate_and_maybe_post, post_paper_events_if_new
+from .discord_summary import (
+    generate_and_maybe_post,
+    post_paper_discovery_if_new,
+    post_paper_events_if_new,
+)
+from .discover_paper import run_discovery, write_alert_files
 from .ingest import run_ingest
 from .ingest_paper import load_paper_config, run_paper_manual, run_paper_scan
 from .overrides import apply_all
@@ -295,8 +300,61 @@ def cmd_run_paper_manual(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_discover_paper(args: argparse.Namespace) -> int:
+    """Probe public sources for large Pauper paper events; write alerts (no MTGDecks crawl)."""
+    ensure_dirs()
+    today = today_jst()
+    log_path = _setup_logging(f"paper-discover-{today.isoformat()}")
+    logging.info("discover-paper start (JST date=%s)", today.isoformat())
+    cfg = load_paper_config()
+    result = run_discovery(
+        min_players=args.min_players,
+        use_melee=not bool(args.skip_melee),
+        use_goldfish=not bool(args.skip_goldfish),
+        use_watchlist=not bool(args.skip_watchlist),
+        as_of=today,
+        config=cfg,
+    )
+    json_path, md_path = write_alert_files(result)
+    logging.info(
+        "discovery candidates=%s sources_ok=%s errors=%s json=%s",
+        len(result.candidates),
+        result.sources_ok,
+        len(result.errors),
+        json_path,
+    )
+    posted: list[str] = []
+    if args.post_discord or args.discord_dry_run:
+        posted = post_paper_discovery_if_new(
+            result,
+            webhook_url=args.webhook,
+            post=bool(args.post_discord),
+            force_post=bool(args.force_discord),
+            username=str(cfg.get("discord_username") or "Pauper Paper"),
+        )
+    print(
+        f"OK discover-paper as_of={result.as_of} candidates={len(result.candidates)} "
+        f"json={json_path} md={md_path} discord_posted={len(posted)}"
+    )
+    print(f"log={log_path}")
+    for c in result.candidates[:15]:
+        pc = c.players if c.players is not None else "?"
+        print(f"  [{c.source}] {c.name} — {pc}p {c.source_url}")
+    if result.errors:
+        for e in result.errors[:5]:
+            print(f"  err {e}")
+    # Soft-fail only when every enabled source errored and no candidates
+    if not result.candidates and result.errors and not any(result.sources_ok.values()):
+        return 2
+    return 0
+
+
 def cmd_run_paper(args: argparse.Namespace) -> int:
-    """Paper spike: scan MTGDecks (≥50) → SQLite channel=paper → weekly md → Discord."""
+    """Paper: offline listing/fixtures or HTML drops → channel=paper → weekly md → Discord.
+
+    Live MTGDecks listing crawl is off by default (Cloudflare). Prefer run-paper-manual
+    or discover-paper + human URL handoff.
+    """
     ensure_dirs()
     today = today_jst()
     log_path = _setup_logging(f"paper-{today.isoformat()}")
@@ -312,12 +370,21 @@ def cmd_run_paper(args: argparse.Namespace) -> int:
             offline_listing = candidate
         offline_events = offline_events or (FIXTURES_DIR / "mtgdecks")
 
+    # Live listing disabled unless explicitly requested (--live) AND config allows
+    allow_live = bool(cfg.get("allow_live_listing", False))
+    try_live = bool(args.live) and allow_live and not bool(args.fixtures) and not bool(args.offline_only)
+    if args.live and not allow_live:
+        logging.warning(
+            "--live ignored: config paper.json allow_live_listing=false "
+            "(MTGDecks CF; use run-paper-manual / HTML drops)"
+        )
+
     summary = run_paper_scan(
         offline_listing=offline_listing,
         offline_events_dir=offline_events,
         force=bool(args.force),
         max_events=args.max_events,
-        try_live=not bool(args.fixtures) and not bool(args.offline_only),
+        try_live=try_live,
     )
     logging.info(
         "paper scan method=%s cf_blocked=%s candidates=%s ingested=%s skipped=%s failed=%s",
@@ -460,8 +527,22 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_discord_summary)
 
     s = sub.add_parser(
+        "discover-paper",
+        help="Thin discovery: Melee/Goldfish/watchlist → reports/paper/alerts (no MTGDecks crawl)",
+    )
+    s.add_argument("--min-players", type=int, default=None, help="Override min players (default config)")
+    s.add_argument("--skip-melee", action="store_true", help="Skip Melee SearchResults")
+    s.add_argument("--skip-goldfish", action="store_true", help="Skip MTGGoldfish name hints")
+    s.add_argument("--skip-watchlist", action="store_true", help="Skip config/paper_watchlist.json")
+    s.add_argument("--post-discord", action="store_true", help="POST new candidates to Discord")
+    s.add_argument("--discord-dry-run", action="store_true", help="Build Discord text without POSTing")
+    s.add_argument("--force-discord", action="store_true", help="Ignore paper_alerts dedupe")
+    s.add_argument("--webhook", type=str, default=None, help="Webhook URL override")
+    s.set_defaults(func=cmd_discover_paper)
+
+    s = sub.add_parser(
         "run-paper",
-        help="Paper spike: MTGDecks ≥50 scan → channel=paper → weekly md → Discord (new events)",
+        help="Paper offline/fixtures ingest → weekly md → Discord (live MTGDecks listing off by default)",
     )
     s.add_argument("--force", action="store_true", help="Reingest even if event already in DB")
     s.add_argument("--max-events", type=int, default=None, help="Limit events this run")
@@ -474,6 +555,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--offline-only",
         action="store_true",
         help="Do not attempt live fetch (requires --offline-listing and/or event HTML drops)",
+    )
+    s.add_argument(
+        "--live",
+        action="store_true",
+        help="Attempt MTGDecks live listing (also needs paper.json allow_live_listing=true; usually CF-blocked)",
     )
     s.add_argument("--offline-listing", type=str, default=None, help="Local listing HTML path")
     s.add_argument(

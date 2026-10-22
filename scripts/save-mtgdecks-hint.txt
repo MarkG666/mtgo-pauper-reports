@@ -1,0 +1,13 @@
+Windows で MTGDecks 大会ページを保存するときのファイル名例:
+
+  event-<大会ID>-短い名前.html
+
+例:
+  event-253889-ursa.html
+
+置き場所（どれでも可）:
+  fixtures\mtgdecks\
+  data\raw\paper_drops\
+
+大会 ID は URL 末尾の tournament-12345 の数字。
+詳しい手順: ストア docs/phase2-paper-pc-browser-guide.md
