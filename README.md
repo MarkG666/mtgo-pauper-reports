@@ -88,6 +88,7 @@ MTGDecks の **参加 50人以上**の Paper 大会を別ジョブで拾い、�
 | Workflow | `.github/workflows/paper.yml`（Challenge 日次とは分離） |
 | 成果物 | `reports/paper/weekly/YYYY-Www.md` |
 | コマンド | `python -m pauper_meta run-paper`（`--fixtures` でオフライン検証） |
+| 手動ハンドオフ | `python -m pauper_meta run-paper-manual --html … --source-url …`（URL ライブは CF で失敗しうる） |
 | Discord | 新規 50+ 大会ごとに投稿（既存 `DISCORD_WEBHOOK_URL`。別chは運用次第） |
 | Cloudflare | Actions 上のヘッドレス取得は阻まれやすい → フィクスチャ／PC 手動ドロップ。詳細は PR とストアの spike notes |
 

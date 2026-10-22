@@ -20,7 +20,9 @@ from .fetch_mtgdecks import CloudflareBlockedError, MtgdecksFetcher
 from .overrides import apply_all, alias_map, resolve_final
 from .parse_mtgdecks import (
     ListingEvent,
+    PaperDeckRow,
     PaperEventParsed,
+    event_id_from_path,
     filter_large_events,
     parse_event_page,
     parse_listing_events,
@@ -346,5 +348,241 @@ def run_paper_scan(
         except Exception as e:
             logger.exception("ingest failed %s", ev.event_id)
             summary["failed"].append({"event_id": ev.event_id, "error": str(e)})
+
+    return summary
+
+
+def parse_paste_json(data: dict[str, Any], *, base_url: str = "https://mtgdecks.net") -> PaperEventParsed:
+    """Minimal structured paste → PaperEventParsed (manual handoff escape hatch)."""
+    event_id = str(data.get("event_id") or "").strip()
+    source_url = str(data.get("source_url") or "").strip()
+    if not event_id and source_url:
+        event_id = event_id_from_path(source_url) or ""
+    if not event_id:
+        raise ValueError("paste JSON needs event_id or source_url containing tournament-<id>")
+    if not source_url:
+        source_url = f"{base_url.rstrip('/')}/Pauper/manual-tournament-{event_id}"
+
+    decks: list[PaperDeckRow] = []
+    raw_decks = data.get("decks") or []
+    if not isinstance(raw_decks, list):
+        raise ValueError("paste JSON decks must be a list")
+    for i, row in enumerate(raw_decks, start=1):
+        if not isinstance(row, dict):
+            continue
+        rank = int(row.get("finish_rank") or i)
+        deck_url = str(row.get("deck_url") or "").strip()
+        deck_path = deck_url
+        decks.append(
+            PaperDeckRow(
+                finish_rank=rank,
+                place_label=str(row.get("place_label") or f"{rank}"),
+                player=str(row.get("player") or f"player-{rank}").strip(),
+                archetype_label=str(row.get("archetype_label") or "Unknown").strip(),
+                deck_name=str(row.get("deck_name") or row.get("archetype_label") or "").strip(),
+                deck_path=deck_path,
+                deck_url=deck_url,
+            )
+        )
+
+    pc = data.get("player_count")
+    player_count = int(pc) if pc is not None and str(pc).strip() != "" else None
+    start = data.get("start_time")
+    start_time = str(start).strip() if start else None
+    return PaperEventParsed(
+        event_id=event_id,
+        name=str(data.get("name") or f"manual-{event_id}").strip(),
+        player_count=player_count,
+        start_time=start_time,
+        source_url=source_url,
+        decks=decks,
+    )
+
+
+def run_paper_manual(
+    *,
+    urls: list[str] | None = None,
+    html_paths: list[Path] | None = None,
+    html_dir: Path | None = None,
+    paste_paths: list[Path] | None = None,
+    source_url_for_html: str | None = None,
+    force: bool = False,
+    force_small: bool = False,
+    try_live: bool = True,
+    db_path: Path | None = None,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Manual URL / HTML / paste handoff into the same paper ingest path.
+
+    Live fetch is best-effort (often Cloudflare-blocked). Prefer saved HTML.
+    """
+    ensure_dirs()
+    init_db(db_path)
+    cfg = config or load_paper_config()
+    base_url = str(cfg.get("base_url") or "https://mtgdecks.net")
+    min_players = int(cfg.get("min_players") or 50)
+    summary: dict[str, Any] = {
+        "candidates": 0,
+        "ingested": [],
+        "skipped_existing": [],
+        "skipped_small": [],
+        "failed": [],
+        "cf_blocked": False,
+        "fetch_method": "manual",
+        "notes": ["手動 URL / HTML ハンドオフ"],
+    }
+
+    fetcher = MtgdecksFetcher(
+        timeout_ms=int(cfg.get("playwright_timeout_ms") or 60_000),
+        wait_sec=float(cfg.get("playwright_wait_sec") or 12),
+    )
+
+    # Collect work items: (event_id, source_url, html|None, paste|None, raw_path|None)
+    work: list[dict[str, Any]] = []
+
+    def _add_html(path: Path, source_url: str | None) -> None:
+        html = path.read_text(encoding="utf-8", errors="replace")
+        eid = event_id_from_path(source_url or "") or None
+        if not eid:
+            m = re.search(r"event-(\d+)", path.name)
+            eid = m.group(1) if m else None
+        if not eid:
+            eid = event_id_from_path(html) or None
+        if not eid:
+            summary["failed"].append({"path": str(path), "error": "could not resolve event_id"})
+            return
+        url = (source_url or "").strip() or f"{base_url.rstrip('/')}/Pauper/manual-tournament-{eid}"
+        work.append(
+            {
+                "event_id": eid,
+                "source_url": url,
+                "html": html,
+                "raw_path": str(path),
+                "paste": None,
+            }
+        )
+
+    for p in html_paths or []:
+        _add_html(Path(p), source_url_for_html)
+
+    if html_dir is not None:
+        d = Path(html_dir)
+        if d.exists():
+            for p in sorted(d.glob("event-*.html")):
+                _add_html(p, None)
+
+    for paste_path in paste_paths or []:
+        path = Path(paste_path)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("paste root must be an object")
+            parsed = parse_paste_json(data, base_url=base_url)
+            work.append(
+                {
+                    "event_id": parsed.event_id,
+                    "source_url": parsed.source_url,
+                    "html": None,
+                    "raw_path": str(path),
+                    "paste": parsed,
+                }
+            )
+        except Exception as e:
+            summary["failed"].append({"path": str(path), "error": f"paste: {e}"})
+
+    for url in urls or []:
+        url = url.strip()
+        if not url:
+            continue
+        eid = event_id_from_path(url)
+        if not eid:
+            summary["failed"].append({"url": url, "error": "URL missing tournament-<id>"})
+            continue
+        # Skip if already queued from HTML
+        if any(w["event_id"] == eid and w.get("html") for w in work):
+            continue
+        html: str | None = None
+        raw_path: str | None = None
+        if try_live:
+            try:
+                fr = fetcher.fetch_playwright(url, f"event-{eid}.html")
+                html, raw_path = fr.html, str(fr.path)
+                summary["fetch_method"] = "manual+playwright"
+            except CloudflareBlockedError as e:
+                logger.warning("manual URL CF blocked %s: %s", eid, e)
+                summary["cf_blocked"] = True
+                summary["failed"].append(
+                    {
+                        "event_id": eid,
+                        "url": url,
+                        "error": "cloudflare; save HTML and pass --html",
+                    }
+                )
+                continue
+            except Exception as e:
+                logger.exception("manual URL fetch failed %s", eid)
+                summary["failed"].append({"event_id": eid, "url": url, "error": str(e)})
+                continue
+        else:
+            summary["failed"].append(
+                {
+                    "event_id": eid,
+                    "url": url,
+                    "error": "live fetch disabled; pass --html or --paste",
+                }
+            )
+            continue
+        work.append(
+            {
+                "event_id": eid,
+                "source_url": url,
+                "html": html,
+                "raw_path": raw_path,
+                "paste": None,
+            }
+        )
+
+    # Dedupe by event_id (prefer html/paste already loaded)
+    by_id: dict[str, dict[str, Any]] = {}
+    for item in work:
+        by_id[item["event_id"]] = item
+    items = list(by_id.values())
+    summary["candidates"] = len(items)
+
+    for item in items:
+        eid = item["event_id"]
+        db_eid = f"paper-{eid}"
+        with db_session(db_path or DB_PATH) as conn:
+            exists = event_exists(conn, db_eid)
+        if exists and not force:
+            summary["skipped_existing"].append(db_eid)
+            continue
+
+        try:
+            if item.get("paste") is not None:
+                parsed = item["paste"]
+            else:
+                parsed = parse_event_page(
+                    item["html"],
+                    event_id=eid,
+                    source_url=item["source_url"],
+                    base_url=base_url,
+                )
+            pc = parsed.player_count
+            if not force_small and (pc is None or pc < min_players):
+                summary["skipped_small"].append(
+                    {"event_id": eid, "player_count": pc, "min_players": min_players}
+                )
+                continue
+            db_id = ingest_parsed_event(
+                parsed,
+                raw_path=item.get("raw_path"),
+                db_path=db_path,
+            )
+            summary["ingested"].append(db_id)
+            logger.info("manual ingested %s (%s)", db_id, parsed.name)
+        except Exception as e:
+            logger.exception("manual ingest failed %s", eid)
+            summary["failed"].append({"event_id": eid, "error": str(e)})
 
     return summary

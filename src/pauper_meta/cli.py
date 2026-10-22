@@ -1,4 +1,4 @@
-"""CLI entry: run-daily / run-paper / apply-overrides / report / init-db / player-stats / discord-*."""
+"""CLI entry: run-daily / run-paper / run-paper-manual / apply-overrides / report / init-db / player-stats / discord-*."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .catchup import run_yesterday_catchup
 from .db import db_session, init_db
 from .discord_summary import generate_and_maybe_post, post_paper_events_if_new
 from .ingest import run_ingest
-from .ingest_paper import load_paper_config, run_paper_scan
+from .ingest_paper import load_paper_config, run_paper_manual, run_paper_scan
 from .overrides import apply_all
 from .paths import DB_PATH, FIXTURES_DIR, LOGS_DIR, PROJECT_ROOT, ensure_dirs
 from .players import (
@@ -208,6 +208,90 @@ def cmd_discord_summary(args: argparse.Namespace) -> int:
     )
     # Always print for Actions log / piping (safe: no secret)
     print(text, end="" if text.endswith("\n") else "\n")
+    return 0
+
+
+def cmd_run_paper_manual(args: argparse.Namespace) -> int:
+    """Manual URL / HTML / paste → same paper ingest + weekly md + Discord."""
+    ensure_dirs()
+    today = today_jst()
+    log_path = _setup_logging(f"paper-manual-{today.isoformat()}")
+    logging.info("run-paper-manual start (JST date=%s)", today.isoformat())
+    init_db()
+    cfg = load_paper_config()
+
+    urls = list(args.url or [])
+    html_paths = [Path(p) for p in (args.html or [])]
+    paste_paths = [Path(p) for p in (args.paste or [])]
+    html_dir = Path(args.html_dir) if args.html_dir else None
+    if not urls and not html_paths and not paste_paths and html_dir is None:
+        logging.error("need at least one of --url / --html / --html-dir / --paste")
+        print("ERROR: pass --url and/or --html / --html-dir / --paste")
+        return 2
+
+    summary = run_paper_manual(
+        urls=urls,
+        html_paths=html_paths,
+        html_dir=html_dir,
+        paste_paths=paste_paths,
+        source_url_for_html=args.source_url,
+        force=bool(args.force),
+        force_small=bool(args.force_small),
+        try_live=not bool(args.offline_only),
+    )
+    logging.info(
+        "paper manual cf_blocked=%s candidates=%s ingested=%s skipped_existing=%s skipped_small=%s failed=%s",
+        summary.get("cf_blocked"),
+        summary.get("candidates"),
+        summary.get("ingested"),
+        summary.get("skipped_existing"),
+        summary.get("skipped_small"),
+        summary.get("failed"),
+    )
+
+    notes = list(summary.get("notes") or [])
+    if summary.get("cf_blocked"):
+        notes.append("一部 URL が Cloudflare で失敗。HTML ドロップを推奨。")
+
+    with db_session() as conn:
+        report_path, week_key, events = write_weekly_report(
+            conn,
+            as_of=today,
+            include_all_if_empty=True,
+            notes=notes,
+        )
+
+    posted: list[str] = []
+    if args.post_discord or args.discord_dry_run:
+        notify = events
+        if summary.get("ingested") and not args.force_discord:
+            want = set(summary["ingested"])
+            notify = [e for e in events if e.event_id in want]
+        posted = post_paper_events_if_new(
+            notify,
+            week_key=week_key,
+            webhook_url=args.webhook,
+            post=bool(args.post_discord),
+            force_post=bool(args.force_discord),
+            username=str(cfg.get("discord_username") or "Pauper Paper"),
+        )
+
+    print(
+        f"OK paper-manual week={week_key} report={report_path} "
+        f"ingested={len(summary.get('ingested') or [])} "
+        f"cf_blocked={int(bool(summary.get('cf_blocked')))} "
+        f"discord_posted={len(posted)}"
+    )
+    print(f"log={log_path}")
+    print(f"db={DB_PATH}")
+    if summary.get("failed"):
+        for f in summary["failed"][:10]:
+            print(f"  fail {f}")
+    if summary.get("skipped_small"):
+        for f in summary["skipped_small"][:5]:
+            print(f"  skip-small {f}")
+    if not summary.get("ingested") and summary.get("failed") and not events:
+        return 2
     return 0
 
 
@@ -415,6 +499,57 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("--webhook", type=str, default=None, help="Webhook URL override")
     s.set_defaults(func=cmd_run_paper)
+
+    s = sub.add_parser(
+        "run-paper-manual",
+        help="Paper manual handoff: event URL(s) and/or saved HTML / paste JSON → weekly md → Discord",
+    )
+    s.add_argument(
+        "--url",
+        action="append",
+        default=[],
+        help="MTGDecks event URL (repeatable). Live fetch often CF-blocked; prefer --html",
+    )
+    s.add_argument(
+        "--html",
+        action="append",
+        default=[],
+        help="Saved event HTML path (repeatable). Use with --source-url when possible",
+    )
+    s.add_argument(
+        "--source-url",
+        type=str,
+        default=None,
+        help="Canonical MTGDecks URL for --html (single-html case)",
+    )
+    s.add_argument(
+        "--html-dir",
+        type=str,
+        default=None,
+        help="Directory of event-<id>-*.html drops",
+    )
+    s.add_argument(
+        "--paste",
+        action="append",
+        default=[],
+        help="Structured paste JSON path (repeatable); see store docs/phase2-paper-manual-handoff.md",
+    )
+    s.add_argument("--force", action="store_true", help="Reingest even if event already in DB")
+    s.add_argument(
+        "--force-small",
+        action="store_true",
+        help="Ingest even when player_count < min_players (or unknown)",
+    )
+    s.add_argument(
+        "--offline-only",
+        action="store_true",
+        help="Do not attempt live fetch for --url (HTML/paste only)",
+    )
+    s.add_argument("--post-discord", action="store_true", help="POST new paper events to Discord")
+    s.add_argument("--discord-dry-run", action="store_true", help="Build Discord texts without POSTing")
+    s.add_argument("--force-discord", action="store_true", help="Post even if already in discord_posted.json")
+    s.add_argument("--webhook", type=str, default=None, help="Webhook URL override")
+    s.set_defaults(func=cmd_run_paper_manual)
 
     return p
 
