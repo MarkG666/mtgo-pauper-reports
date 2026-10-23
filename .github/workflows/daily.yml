@@ -3,7 +3,9 @@
 # Wall clocks (JST; Japan has no DST):
 #   US Eastern DST (EDT): 13:00 JST = 04:00 UTC
 #   US Eastern standard (EST): 14:00 JST = 05:00 UTC
-# Crons fire at both hours; schedule_gate picks the correct one via America/New_York.
+# Crons fire at both hours; schedule_gate picks the correct cron via America/New_York.
+# Gate on github.event.schedule (which cron fired), NOT runner wall-clock hour —
+# Actions schedule triggers are often delayed by hours and would otherwise skip.
 # Weekly digest: Monday, same UTC hour as daily + 30 minutes (04:30 / 05:30).
 name: Pauper daily
 
@@ -64,9 +66,9 @@ jobs:
             "30 4 * * 1"|"30 5 * * 1") KIND=weekly ;;
           esac
           if [ "$FORCE" = "1" ]; then
-            python -m pauper_meta.schedule_gate --kind "$KIND" --force
+            python -m pauper_meta.schedule_gate --kind "$KIND" --schedule "$SCHEDULE" --force
           else
-            python -m pauper_meta.schedule_gate --kind "$KIND"
+            python -m pauper_meta.schedule_gate --kind "$KIND" --schedule "$SCHEDULE"
           fi
           echo "Gate schedule='$SCHEDULE' kind=$KIND force=$FORCE"
 

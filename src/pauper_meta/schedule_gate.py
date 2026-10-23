@@ -6,13 +6,13 @@ Desired wall clocks (Japan has no DST; JST = UTC+9 always):
 - US Eastern **standard (EST)**: daily at **14:00 JST** = **05:00 UTC**
 
 Workflow crons fire at both 04:00 and 05:00 UTC daily (and Monday :30 for weekly).
-This module decides whether *this* UTC hour is the intended one by checking
+This module decides whether *this cron expression* is the intended one by checking
 ``America/New_York`` DST via ``zoneinfo``.
 
-Exit codes (CLI):
-- 0 — this slot should run (or workflow_dispatch / force)
-- 78 — skip this cron firing (wrong UTC hour for current DST state)
-  (78 = EX_CONFIG-ish; Actions treats non-zero as failure unless we use outputs)
+**Important:** GitHub Actions ``schedule`` triggers are often delayed by minutes to
+hours. Do **not** compare ``datetime.now().hour`` to the intended UTC hour — a
+04:00 UTC cron that starts at 09:00 UTC would then be skipped forever. Gate on
+``github.event.schedule`` (which cron fired) instead.
 
 Prefer writing ``should_run`` to ``GITHUB_OUTPUT`` and exiting 0 always when
 invoked from Actions — see ``main()``.
@@ -35,6 +35,12 @@ UTC_HOUR_EST = 5  # 14:00 JST while US on standard time
 
 WEEKLY_MINUTE = 30  # Monday digest: same UTC hour as daily, +30 minutes
 
+# Cron expressions declared in .github/workflows/daily.yml
+CRON_DAILY_EDT = "0 4 * * *"
+CRON_DAILY_EST = "0 5 * * *"
+CRON_WEEKLY_EDT = "30 4 * * 1"
+CRON_WEEKLY_EST = "30 5 * * 1"
+
 
 def us_eastern_in_dst(now: datetime | None = None) -> bool:
     """True when America/New_York observes DST (EDT) at ``now``."""
@@ -56,8 +62,51 @@ def intended_jst_label(now: datetime | None = None) -> str:
     return f"{hour_jst:02d}:00 JST"
 
 
+def parse_cron_utc_hour(schedule: str) -> int | None:
+    """Extract the UTC hour field from a 5-field cron (``m h dom mon dow``)."""
+    parts = schedule.strip().split()
+    if len(parts) < 2:
+        return None
+    try:
+        return int(parts[1])
+    except ValueError:
+        return None
+
+
+def should_run_for_schedule(
+    schedule: str | None,
+    *,
+    kind: str = "daily",
+    now: datetime | None = None,
+) -> bool:
+    """True if this Actions cron expression is the DST-correct slot.
+
+    ``schedule`` is ``github.event.schedule`` (e.g. ``\"0 4 * * *\"``). When
+    empty (local/dev), fall back to wall-clock hour matching — fine for tests,
+    unsafe for delayed Actions runners.
+    """
+    now = now or datetime.now(tz=UTC)
+    intended = intended_daily_utc_hour(now)
+    if schedule:
+        cron_hour = parse_cron_utc_hour(schedule)
+        if cron_hour is None:
+            return False
+        return cron_hour == intended
+    # No cron context: wall-clock fallback (tests / manual CLI only)
+    if kind == "weekly":
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        else:
+            now = now.astimezone(UTC)
+        return now.weekday() == 0 and now.hour == intended and now.minute == WEEKLY_MINUTE
+    return should_run_daily_slot(now)
+
+
 def should_run_daily_slot(now: datetime | None = None) -> bool:
-    """True if current UTC hour matches the DST-aware daily slot."""
+    """True if current UTC hour matches the DST-aware daily slot (wall clock).
+
+    Prefer :func:`should_run_for_schedule` under Actions so delayed crons still run.
+    """
     now = now or datetime.now(tz=UTC)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
@@ -67,11 +116,7 @@ def should_run_daily_slot(now: datetime | None = None) -> bool:
 
 
 def should_run_weekly_slot(now: datetime | None = None) -> bool:
-    """True if Monday UTC and hour/minute match daily slot + 30 minutes.
-
-    Weekly keeps a +30 min offset after the daily job (same relative spacing
-    as the old 02:00 / 02:30 pair).
-    """
+    """True if Monday UTC and hour/minute match daily slot + 30 minutes."""
     now = now or datetime.now(tz=UTC)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
@@ -99,6 +144,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Which cron slot to validate",
     )
     p.add_argument(
+        "--schedule",
+        default="",
+        help="github.event.schedule cron string (preferred under Actions)",
+    )
+    p.add_argument(
         "--force",
         action="store_true",
         help="Always allow (workflow_dispatch)",
@@ -109,23 +159,24 @@ def main(argv: list[str] | None = None) -> int:
     in_dst = us_eastern_in_dst(now)
     intended = intended_daily_utc_hour(now)
     jst = intended_jst_label(now)
+    schedule = (args.schedule or os.environ.get("GITHUB_EVENT_SCHEDULE") or "").strip()
 
     if args.force:
         run = True
         reason = "force/workflow_dispatch"
-    elif args.kind == "weekly":
-        # Weekly crons only fire Mon 04:30 and 05:30; still gate on DST hour.
-        run = now.hour == intended
-        reason = (
-            f"weekly UTC {now.hour:02d}:{now.minute:02d} "
-            f"intended_hour={intended} ({jst}, NY DST={in_dst})"
-        )
     else:
-        run = should_run_daily_slot(now)
-        reason = (
-            f"daily UTC hour={now.hour} intended={intended} "
-            f"({jst}, NY DST={in_dst})"
-        )
+        run = should_run_for_schedule(schedule or None, kind=args.kind, now=now)
+        if schedule:
+            reason = (
+                f"{args.kind} cron='{schedule}' cron_hour={parse_cron_utc_hour(schedule)} "
+                f"intended={intended} ({jst}, NY DST={in_dst}) "
+                f"wall_utc_hour={now.hour}"
+            )
+        else:
+            reason = (
+                f"{args.kind} no-schedule wall UTC hour={now.hour} intended={intended} "
+                f"({jst}, NY DST={in_dst})"
+            )
 
     print(f"schedule_gate kind={args.kind} run={int(run)} {reason}")
     _write_github_output("should_run", "1" if run else "0")
