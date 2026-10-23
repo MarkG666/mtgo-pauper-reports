@@ -1,0 +1,71 @@
+{
+  "event_id": "253889",
+  "db_event_id": "paper-253889",
+  "source_url": "https://mtgdecks.net/Pauper/ursa-s-saga-a-bristol-pauper-league-ipt-pauper-league-bristol-tournament-253889",
+  "decks": [
+    {
+      "finish_rank": 1,
+      "place_label": "優勝",
+      "player": "ernesto jacopo varriale",
+      "archetype_label": "Grixis Affinity",
+      "deck_url": "https://mtgdecks.net/Pauper/grixis-affinity-decklist-by-ernesto-jacopo-varriale-2000001",
+      "deck_name": "Grixis Affinity"
+    },
+    {
+      "finish_rank": 2,
+      "place_label": "準優勝",
+      "player": "rickybuckets",
+      "archetype_label": "Mono Red Madness",
+      "deck_url": "https://mtgdecks.net/Pauper/mono-red-madness-decklist-by-rickybuckets-2000002",
+      "deck_name": "Mono-Red Madness"
+    },
+    {
+      "finish_rank": 3,
+      "place_label": "Top4",
+      "player": "adam davis",
+      "archetype_label": "Mono Blue Terror",
+      "deck_url": "https://mtgdecks.net/Pauper/mono-blue-delver-decklist-by-adam-davis-2000003",
+      "deck_name": "Mono-Blue Delver"
+    },
+    {
+      "finish_rank": 4,
+      "place_label": "Top4",
+      "player": "redross",
+      "archetype_label": "Mono Red Madness",
+      "deck_url": "https://mtgdecks.net/Pauper/mono-red-madness-decklist-by-redross-2000004",
+      "deck_name": "Mono-Red Madness"
+    },
+    {
+      "finish_rank": 5,
+      "place_label": "Top8",
+      "player": "mercian",
+      "archetype_label": "Mono Red Rally",
+      "deck_url": "https://mtgdecks.net/Pauper/mono-red-rally-decklist-by-mercian-2000005",
+      "deck_name": "Mono Red Rally"
+    },
+    {
+      "finish_rank": 6,
+      "place_label": "Top8",
+      "player": "nerdyboots",
+      "archetype_label": "Monster Tron",
+      "deck_url": "https://mtgdecks.net/Pauper/gruul-monster-tron-decklist-by-nerdyboots-2000006",
+      "deck_name": "Gruul Monster Tron"
+    },
+    {
+      "finish_rank": 7,
+      "place_label": "Top8",
+      "player": "finianedwards",
+      "archetype_label": "White Weenie",
+      "deck_url": "https://mtgdecks.net/Pauper/mono-white-decklist-by-finianedwards-2000007",
+      "deck_name": "Mono-White"
+    },
+    {
+      "finish_rank": 8,
+      "place_label": "Top8",
+      "player": "jacob1200",
+      "archetype_label": "UB Faeries",
+      "deck_url": "https://mtgdecks.net/Pauper/dimir-faeries-decklist-by-jacob1200-2000008",
+      "deck_name": "Dimir Faeries"
+    }
+  ]
+}

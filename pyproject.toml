@@ -5,12 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pauper-meta"
 version = "0.1.0"
-description = "MTGO Pauper Challenge/Preliminary daily meta tracker (Phase 1)"
+description = "MTGO Pauper Challenge/Preliminary daily meta tracker + Paper (MTGDecks) spike"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "requests>=2.31.0,<3",
   "tzdata>=2024.1",
+  "playwright>=1.40.0,<2",
 ]
 
 [project.scripts]
