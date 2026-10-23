@@ -1,0 +1,14 @@
+{
+  "min_players": 50,
+  "listing_url": "https://mtgdecks.net/Pauper/tournaments/platform:tabletop",
+  "base_url": "https://mtgdecks.net",
+  "fetch_mode": "playwright",
+  "playwright_timeout_ms": 60000,
+  "playwright_wait_sec": 12,
+  "skip_mtgo_named": true,
+  "skip_unknown_player_count": true,
+  "lookback_listing_rows": 80,
+  "discord_username": "Pauper Paper",
+  "allow_live_listing": false,
+  "discovery_melee_date_windows": ["LastMonth", "ThisWeek", "Last7Days"]
+}

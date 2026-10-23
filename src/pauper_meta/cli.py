@@ -1,4 +1,4 @@
-"""CLI entry: run-daily / apply-overrides / report / init-db / player-stats / discord-*."""
+"""CLI entry: run-daily / run-paper / run-paper-manual / discover-paper / …"""
 
 from __future__ import annotations
 
@@ -11,10 +11,16 @@ from pathlib import Path
 from .backfill import run_backfill
 from .catchup import run_yesterday_catchup
 from .db import db_session, init_db
-from .discord_summary import generate_and_maybe_post
+from .discord_summary import (
+    generate_and_maybe_post,
+    post_paper_discovery_if_new,
+    post_paper_events_if_new,
+)
+from .discover_paper import run_discovery, write_alert_files
 from .ingest import run_ingest
+from .ingest_paper import load_paper_config, run_paper_manual, run_paper_scan
 from .overrides import apply_all
-from .paths import DB_PATH, LOGS_DIR, PROJECT_ROOT, ensure_dirs
+from .paths import DB_PATH, FIXTURES_DIR, LOGS_DIR, PROJECT_ROOT, ensure_dirs
 from .players import (
     format_player_stats_table,
     load_player_stats_config,
@@ -22,6 +28,7 @@ from .players import (
     rebuild_player_event_results,
 )
 from .report_daily import today_jst, write_report
+from .report_paper import write_weekly_report
 
 
 def _setup_logging(report_date: str) -> Path:
@@ -209,8 +216,238 @@ def cmd_discord_summary(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run_paper_manual(args: argparse.Namespace) -> int:
+    """Manual URL / HTML / paste → same paper ingest + weekly md + Discord."""
+    ensure_dirs()
+    today = today_jst()
+    log_path = _setup_logging(f"paper-manual-{today.isoformat()}")
+    logging.info("run-paper-manual start (JST date=%s)", today.isoformat())
+    init_db()
+    cfg = load_paper_config()
+
+    urls = list(args.url or [])
+    html_paths = [Path(p) for p in (args.html or [])]
+    paste_paths = [Path(p) for p in (args.paste or [])]
+    html_dir = Path(args.html_dir) if args.html_dir else None
+    if not urls and not html_paths and not paste_paths and html_dir is None:
+        logging.error("need at least one of --url / --html / --html-dir / --paste")
+        print("ERROR: pass --url and/or --html / --html-dir / --paste")
+        return 2
+
+    summary = run_paper_manual(
+        urls=urls,
+        html_paths=html_paths,
+        html_dir=html_dir,
+        paste_paths=paste_paths,
+        source_url_for_html=args.source_url,
+        force=bool(args.force),
+        force_small=bool(args.force_small),
+        try_live=not bool(args.offline_only),
+    )
+    logging.info(
+        "paper manual cf_blocked=%s candidates=%s ingested=%s skipped_existing=%s skipped_small=%s failed=%s",
+        summary.get("cf_blocked"),
+        summary.get("candidates"),
+        summary.get("ingested"),
+        summary.get("skipped_existing"),
+        summary.get("skipped_small"),
+        summary.get("failed"),
+    )
+
+    notes = list(summary.get("notes") or [])
+    if summary.get("cf_blocked"):
+        notes.append("一部 URL が Cloudflare で失敗。HTML ドロップを推奨。")
+
+    with db_session() as conn:
+        report_path, week_key, events = write_weekly_report(
+            conn,
+            as_of=today,
+            include_all_if_empty=True,
+            notes=notes,
+        )
+
+    posted: list[str] = []
+    if args.post_discord or args.discord_dry_run:
+        notify = events
+        if summary.get("ingested") and not args.force_discord:
+            want = set(summary["ingested"])
+            notify = [e for e in events if e.event_id in want]
+        posted = post_paper_events_if_new(
+            notify,
+            week_key=week_key,
+            webhook_url=args.webhook,
+            post=bool(args.post_discord),
+            force_post=bool(args.force_discord),
+            username=str(cfg.get("discord_username") or "Pauper Paper"),
+        )
+
+    print(
+        f"OK paper-manual week={week_key} report={report_path} "
+        f"ingested={len(summary.get('ingested') or [])} "
+        f"cf_blocked={int(bool(summary.get('cf_blocked')))} "
+        f"discord_posted={len(posted)}"
+    )
+    print(f"log={log_path}")
+    print(f"db={DB_PATH}")
+    if summary.get("failed"):
+        for f in summary["failed"][:10]:
+            print(f"  fail {f}")
+    if summary.get("skipped_small"):
+        for f in summary["skipped_small"][:5]:
+            print(f"  skip-small {f}")
+    if not summary.get("ingested") and summary.get("failed") and not events:
+        return 2
+    return 0
+
+
+def cmd_discover_paper(args: argparse.Namespace) -> int:
+    """Probe public sources for large Pauper paper events; write alerts (no MTGDecks crawl)."""
+    ensure_dirs()
+    today = today_jst()
+    log_path = _setup_logging(f"paper-discover-{today.isoformat()}")
+    logging.info("discover-paper start (JST date=%s)", today.isoformat())
+    cfg = load_paper_config()
+    result = run_discovery(
+        min_players=args.min_players,
+        use_melee=not bool(args.skip_melee),
+        use_goldfish=not bool(args.skip_goldfish),
+        use_watchlist=not bool(args.skip_watchlist),
+        as_of=today,
+        config=cfg,
+    )
+    json_path, md_path = write_alert_files(result)
+    logging.info(
+        "discovery candidates=%s sources_ok=%s errors=%s json=%s",
+        len(result.candidates),
+        result.sources_ok,
+        len(result.errors),
+        json_path,
+    )
+    posted: list[str] = []
+    if args.post_discord or args.discord_dry_run:
+        posted = post_paper_discovery_if_new(
+            result,
+            webhook_url=args.webhook,
+            post=bool(args.post_discord),
+            force_post=bool(args.force_discord),
+            username=str(cfg.get("discord_username") or "Pauper Paper"),
+        )
+    print(
+        f"OK discover-paper as_of={result.as_of} candidates={len(result.candidates)} "
+        f"json={json_path} md={md_path} discord_posted={len(posted)}"
+    )
+    print(f"log={log_path}")
+    for c in result.candidates[:15]:
+        pc = c.players if c.players is not None else "?"
+        print(f"  [{c.source}] {c.name} — {pc}p {c.source_url}")
+    if result.errors:
+        for e in result.errors[:5]:
+            print(f"  err {e}")
+    # Soft-fail only when every enabled source errored and no candidates
+    if not result.candidates and result.errors and not any(result.sources_ok.values()):
+        return 2
+    return 0
+
+
+def cmd_run_paper(args: argparse.Namespace) -> int:
+    """Paper: offline listing/fixtures or HTML drops → channel=paper → weekly md → Discord.
+
+    Live MTGDecks listing crawl is off by default (Cloudflare). Prefer run-paper-manual
+    or discover-paper + human URL handoff.
+    """
+    ensure_dirs()
+    today = today_jst()
+    log_path = _setup_logging(f"paper-{today.isoformat()}")
+    logging.info("run-paper start (JST date=%s)", today.isoformat())
+    init_db()
+    cfg = load_paper_config()
+    offline_listing = Path(args.offline_listing) if args.offline_listing else None
+    offline_events = Path(args.offline_events_dir) if args.offline_events_dir else None
+    # Default offline fixtures when --fixtures (Actions CF fallback path)
+    if args.fixtures and not offline_listing:
+        candidate = FIXTURES_DIR / "mtgdecks" / "listing-tabletop-mini.html"
+        if candidate.exists():
+            offline_listing = candidate
+        offline_events = offline_events or (FIXTURES_DIR / "mtgdecks")
+
+    # Live listing disabled unless explicitly requested (--live) AND config allows
+    allow_live = bool(cfg.get("allow_live_listing", False))
+    try_live = bool(args.live) and allow_live and not bool(args.fixtures) and not bool(args.offline_only)
+    if args.live and not allow_live:
+        logging.warning(
+            "--live ignored: config paper.json allow_live_listing=false "
+            "(MTGDecks CF; use run-paper-manual / HTML drops)"
+        )
+
+    summary = run_paper_scan(
+        offline_listing=offline_listing,
+        offline_events_dir=offline_events,
+        force=bool(args.force),
+        max_events=args.max_events,
+        try_live=try_live,
+    )
+    logging.info(
+        "paper scan method=%s cf_blocked=%s candidates=%s ingested=%s skipped=%s failed=%s",
+        summary.get("fetch_method"),
+        summary.get("cf_blocked"),
+        summary.get("candidates"),
+        summary.get("ingested"),
+        summary.get("skipped_existing"),
+        summary.get("failed"),
+    )
+
+    notes: list[str] = []
+    if summary.get("cf_blocked"):
+        notes.append(
+            "Cloudflare によりライブ取得がブロックされた（または失敗）。"
+            "フィクスチャ／手動ドロップがあればそれを使用。"
+        )
+    if summary.get("fetch_method") in ("fixtures-only", "offline"):
+        notes.append(f"取得モード: {summary.get('fetch_method')}")
+
+    with db_session() as conn:
+        report_path, week_key, events = write_weekly_report(
+            conn,
+            as_of=today,
+            include_all_if_empty=True,
+            notes=notes,
+        )
+
+    posted: list[str] = []
+    if args.post_discord or args.discord_dry_run:
+        # Only notify for events ingested this run (new analyses), unless force
+        notify = events
+        if summary.get("ingested") and not args.force_discord:
+            want = set(summary["ingested"])
+            notify = [e for e in events if e.event_id in want]
+        posted = post_paper_events_if_new(
+            notify,
+            week_key=week_key,
+            webhook_url=args.webhook,
+            post=bool(args.post_discord),
+            force_post=bool(args.force_discord),
+            username=str(cfg.get("discord_username") or "Pauper Paper"),
+        )
+
+    print(
+        f"OK paper week={week_key} report={report_path} "
+        f"ingested={len(summary.get('ingested') or [])} "
+        f"cf_blocked={int(bool(summary.get('cf_blocked')))} "
+        f"method={summary.get('fetch_method')} discord_posted={len(posted)}"
+    )
+    print(f"log={log_path}")
+    print(f"db={DB_PATH}")
+    if summary.get("failed"):
+        for f in summary["failed"][:10]:
+            print(f"  fail {f}")
+        # Non-fatal for CF-only failures when fixtures produced a report
+        if not events and summary.get("cf_blocked"):
+            return 2
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="pauper_meta", description="Pauper meta tracker (Phase 1)")
+    p = argparse.ArgumentParser(prog="pauper_meta", description="Pauper meta tracker")
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("init-db", help="Create SQLite schema")
@@ -288,6 +525,117 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("--webhook", type=str, default=None, help="Webhook URL (prefer Secret/env)")
     s.set_defaults(func=cmd_discord_summary)
+
+    s = sub.add_parser(
+        "discover-paper",
+        help="Thin discovery: Melee/Goldfish/watchlist → reports/paper/alerts (no MTGDecks crawl)",
+    )
+    s.add_argument("--min-players", type=int, default=None, help="Override min players (default config)")
+    s.add_argument("--skip-melee", action="store_true", help="Skip Melee SearchResults")
+    s.add_argument("--skip-goldfish", action="store_true", help="Skip MTGGoldfish name hints")
+    s.add_argument("--skip-watchlist", action="store_true", help="Skip config/paper_watchlist.json")
+    s.add_argument("--post-discord", action="store_true", help="POST new candidates to Discord")
+    s.add_argument("--discord-dry-run", action="store_true", help="Build Discord text without POSTing")
+    s.add_argument("--force-discord", action="store_true", help="Ignore paper_alerts dedupe")
+    s.add_argument("--webhook", type=str, default=None, help="Webhook URL override")
+    s.set_defaults(func=cmd_discover_paper)
+
+    s = sub.add_parser(
+        "run-paper",
+        help="Paper offline/fixtures ingest → weekly md → Discord (live MTGDecks listing off by default)",
+    )
+    s.add_argument("--force", action="store_true", help="Reingest even if event already in DB")
+    s.add_argument("--max-events", type=int, default=None, help="Limit events this run")
+    s.add_argument(
+        "--fixtures",
+        action="store_true",
+        help="Use fixtures/mtgdecks offline HTML only (no live Playwright)",
+    )
+    s.add_argument(
+        "--offline-only",
+        action="store_true",
+        help="Do not attempt live fetch (requires --offline-listing and/or event HTML drops)",
+    )
+    s.add_argument(
+        "--live",
+        action="store_true",
+        help="Attempt MTGDecks live listing (also needs paper.json allow_live_listing=true; usually CF-blocked)",
+    )
+    s.add_argument("--offline-listing", type=str, default=None, help="Local listing HTML path")
+    s.add_argument(
+        "--offline-events-dir",
+        type=str,
+        default=None,
+        help="Directory of event-<id>-*.html drops (default fixtures/mtgdecks when --fixtures)",
+    )
+    s.add_argument(
+        "--post-discord",
+        action="store_true",
+        help="POST new paper events to Discord (DISCORD_WEBHOOK_URL; same channel as Challenge for now)",
+    )
+    s.add_argument(
+        "--discord-dry-run",
+        action="store_true",
+        help="Build paper Discord texts without POSTing",
+    )
+    s.add_argument(
+        "--force-discord",
+        action="store_true",
+        help="Post even if data/discord_posted.json already lists the paper event id",
+    )
+    s.add_argument("--webhook", type=str, default=None, help="Webhook URL override")
+    s.set_defaults(func=cmd_run_paper)
+
+    s = sub.add_parser(
+        "run-paper-manual",
+        help="Paper manual handoff: event URL(s) and/or saved HTML / paste JSON → weekly md → Discord",
+    )
+    s.add_argument(
+        "--url",
+        action="append",
+        default=[],
+        help="MTGDecks event URL (repeatable). Live fetch often CF-blocked; prefer --html",
+    )
+    s.add_argument(
+        "--html",
+        action="append",
+        default=[],
+        help="Saved event HTML path (repeatable). Use with --source-url when possible",
+    )
+    s.add_argument(
+        "--source-url",
+        type=str,
+        default=None,
+        help="Canonical MTGDecks URL for --html (single-html case)",
+    )
+    s.add_argument(
+        "--html-dir",
+        type=str,
+        default=None,
+        help="Directory of event-<id>-*.html drops",
+    )
+    s.add_argument(
+        "--paste",
+        action="append",
+        default=[],
+        help="Structured paste JSON path (repeatable); see store docs/phase2-paper-manual-handoff.md",
+    )
+    s.add_argument("--force", action="store_true", help="Reingest even if event already in DB")
+    s.add_argument(
+        "--force-small",
+        action="store_true",
+        help="Ingest even when player_count < min_players (or unknown)",
+    )
+    s.add_argument(
+        "--offline-only",
+        action="store_true",
+        help="Do not attempt live fetch for --url (HTML/paste only)",
+    )
+    s.add_argument("--post-discord", action="store_true", help="POST new paper events to Discord")
+    s.add_argument("--discord-dry-run", action="store_true", help="Build Discord texts without POSTing")
+    s.add_argument("--force-discord", action="store_true", help="Post even if already in discord_posted.json")
+    s.add_argument("--webhook", type=str, default=None, help="Webhook URL override")
+    s.set_defaults(func=cmd_run_paper_manual)
 
     return p
 

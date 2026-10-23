@@ -25,18 +25,34 @@ WEEKLY_TOP_N = 10
 
 
 def load_discord_posted(path: Path | None = None) -> dict[str, list[str]]:
-    """Load posted-date tracker. Shape: ``{"daily": ["YYYY-MM-DD", ...], "weekly": [...]}``."""
+    """Load posted tracker.
+
+    Shape: ``{"daily": [...], "weekly": [...], "paper": ["paper-<id>", ...],
+    "paper_alerts": ["melee-<id>", ...]}``.
+    ``paper`` = fully analyzed events; ``paper_alerts`` = discovery pings (dedupe).
+    """
     p = path or DISCORD_POSTED_PATH
+    empty: dict[str, list[str]] = {
+        "daily": [],
+        "weekly": [],
+        "paper": [],
+        "paper_alerts": [],
+    }
     if not p.exists():
-        return {"daily": [], "weekly": []}
+        return empty
     try:
         data: Any = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"daily": [], "weekly": []}
+        return empty
     if not isinstance(data, dict):
-        return {"daily": [], "weekly": []}
-    out: dict[str, list[str]] = {"daily": [], "weekly": []}
-    for key in ("daily", "weekly"):
+        return empty
+    out: dict[str, list[str]] = {
+        "daily": [],
+        "weekly": [],
+        "paper": [],
+        "paper_alerts": [],
+    }
+    for key in ("daily", "weekly", "paper", "paper_alerts"):
         raw = data.get(key) or []
         if isinstance(raw, list):
             out[key] = sorted({str(x) for x in raw if x})
@@ -46,6 +62,11 @@ def load_discord_posted(path: Path | None = None) -> dict[str, list[str]]:
 def was_discord_posted(mode: str, report_date: date, path: Path | None = None) -> bool:
     data = load_discord_posted(path)
     return report_date.isoformat() in data.get(mode, [])
+
+
+def was_paper_event_posted(event_id: str, path: Path | None = None) -> bool:
+    data = load_discord_posted(path)
+    return event_id in data.get("paper", [])
 
 
 def mark_discord_posted(mode: str, report_date: date, path: Path | None = None) -> None:
@@ -59,6 +80,115 @@ def mark_discord_posted(mode: str, report_date: date, path: Path | None = None) 
     data[key] = sorted(dates)
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     log.info("marked discord posted mode=%s date=%s path=%s", key, report_date.isoformat(), p)
+
+
+def mark_paper_event_posted(event_id: str, path: Path | None = None) -> None:
+    ensure_dirs()
+    p = path or DISCORD_POSTED_PATH
+    data = load_discord_posted(p)
+    posted = set(data.get("paper", []))
+    posted.add(event_id)
+    data["paper"] = sorted(posted)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    log.info("marked discord paper event posted id=%s path=%s", event_id, p)
+
+
+def was_paper_alert_posted(alert_key: str, path: Path | None = None) -> bool:
+    data = load_discord_posted(path)
+    return alert_key in data.get("paper_alerts", [])
+
+
+def mark_paper_alert_posted(alert_key: str, path: Path | None = None) -> None:
+    ensure_dirs()
+    p = path or DISCORD_POSTED_PATH
+    data = load_discord_posted(p)
+    posted = set(data.get("paper_alerts", []))
+    posted.add(alert_key)
+    data["paper_alerts"] = sorted(posted)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    log.info("marked discord paper alert posted id=%s path=%s", alert_key, p)
+
+
+def post_paper_discovery_if_new(
+    result: Any,
+    *,
+    webhook_url: str | None = None,
+    post: bool = False,
+    force_post: bool = False,
+    username: str = "Pauper Paper",
+) -> list[str]:
+    """Discord ping for discovery candidates not yet in ``paper_alerts``.
+
+    Only candidates with a known player count ≥ min_players are tracked for dedupe
+    (name-only Goldfish hints do not mark the tracker, to avoid silent drops).
+    """
+    from .discover_paper import DiscoveryResult, build_discovery_discord_text
+
+    if not isinstance(result, DiscoveryResult):
+        return []
+    countable = [
+        c
+        for c in result.candidates
+        if c.players is not None and c.players >= result.min_players
+    ]
+    new_keys = [
+        c.alert_key()
+        for c in countable
+        if force_post or not was_paper_alert_posted(c.alert_key())
+    ]
+    if not new_keys and not force_post:
+        # Still allow posting name-only batch once per day via synthetic key
+        day_key = f"hints-{result.as_of}"
+        hints = [c for c in result.candidates if c.players is None]
+        if not hints or was_paper_alert_posted(day_key):
+            log.info("Discord paper discovery: nothing new to ping")
+            return []
+        text = build_discovery_discord_text(result)
+        if not post:
+            log.info("paper discovery discord dry-run (%s chars)", len(text))
+            return []
+        url = resolve_webhook_url(webhook_url)
+        if not url:
+            log.warning("DISCORD_WEBHOOK_URL not set; skipping discovery Discord post")
+            return []
+        post_discord_webhook(text, url, username=username)
+        mark_paper_alert_posted(day_key)
+        return [day_key]
+
+    # Filter result view to new countable (+ optional hints) for the message
+    if not force_post:
+        want = set(new_keys)
+        filtered = [
+            c
+            for c in result.candidates
+            if c.alert_key() in want or c.players is None
+        ]
+        from .discover_paper import DiscoveryResult as DR
+
+        view = DR(
+            as_of=result.as_of,
+            min_players=result.min_players,
+            candidates=filtered,
+            sources_ok=result.sources_ok,
+            errors=result.errors,
+            notes=result.notes,
+        )
+    else:
+        view = result
+
+    text = build_discovery_discord_text(view)
+    if not post:
+        log.info("paper discovery discord dry-run (%s chars) keys=%s", len(text), new_keys)
+        return []
+    url = resolve_webhook_url(webhook_url)
+    if not url:
+        log.warning("DISCORD_WEBHOOK_URL not set; skipping discovery Discord post")
+        return []
+    post_discord_webhook(text, url, username=username)
+    for key in new_keys:
+        mark_paper_alert_posted(key)
+    log.info("posted paper discovery alert keys=%s", new_keys)
+    return new_keys
 
 
 def report_github_url(report_date: str, *, repo: str | None = None, branch: str | None = None) -> str:
@@ -267,6 +397,81 @@ def resolve_webhook_url(explicit: str | None = None) -> str | None:
         return explicit.strip()
     env = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
     return env or None
+
+
+def build_paper_event_summary(
+    event: Any,
+    *,
+    week_report_url: str | None = None,
+) -> str:
+    """Short Discord blurb for one newly analyzed ≥50 Paper event."""
+    from .report_paper import PaperEventBlock, paper_report_github_url
+
+    assert isinstance(event, PaperEventBlock)
+    pc = f"{event.player_count}人" if event.player_count is not None else "?"
+    lines: list[str] = [
+        "**Pauper Paper（50+）**",
+        "",
+        f"**{event.name}**",
+        f"日付 `{event.start_time or '?'}` / {pc}",
+        "",
+    ]
+    if event.top8:
+        lines.append("**Top8**（プレイヤー＋アーキ）")
+        for row in event.top8:
+            link = f" <{row.deck_url}>" if row.deck_url else ""
+            lines.append(f"- {row.place_label}: {row.player} — {row.archetype}{link}")
+        lines.append("")
+    if event.source_url:
+        lines.append(f"MTGDecks: {event.source_url}")
+    if week_report_url:
+        lines.append(f"週次レポート: {week_report_url}")
+    elif week_report_url is None:
+        # caller may omit; still fine
+        pass
+    return _truncate("\n".join(lines).rstrip() + "\n")
+
+
+def post_paper_events_if_new(
+    events: list[Any],
+    *,
+    week_key: str | None = None,
+    webhook_url: str | None = None,
+    post: bool = False,
+    force_post: bool = False,
+    username: str = "Pauper Paper",
+) -> list[str]:
+    """Post Discord for each paper event not yet in discord_posted.json ``paper`` list.
+
+    Reuses ``DISCORD_WEBHOOK_URL`` (same channel for now; separate channel later if noisy).
+    Returns list of posted event ids.
+    """
+    from .report_paper import PaperEventBlock, paper_report_github_url
+
+    posted_ids: list[str] = []
+    week_url = paper_report_github_url(week_key) if week_key else None
+    for ev in events:
+        if not isinstance(ev, PaperEventBlock):
+            continue
+        if not force_post and was_paper_event_posted(ev.event_id):
+            log.info("Discord paper event %s already posted — skipping", ev.event_id)
+            continue
+        text = build_paper_event_summary(ev, week_report_url=week_url)
+        if not post:
+            log.info("paper discord dry-run %s (%s chars)", ev.event_id, len(text))
+            continue
+        url = resolve_webhook_url(webhook_url)
+        if not url:
+            log.warning(
+                "DISCORD_WEBHOOK_URL not set; skipping Paper Discord post "
+                "(same Secret as Challenge; separate channel later if needed)"
+            )
+            continue
+        post_discord_webhook(text, url, username=username)
+        mark_paper_event_posted(ev.event_id)
+        posted_ids.append(ev.event_id)
+        log.info("posted paper event %s to Discord", ev.event_id)
+    return posted_ids
 
 
 def generate_and_maybe_post(

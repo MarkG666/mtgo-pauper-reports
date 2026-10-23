@@ -1,0 +1,173 @@
+# Phase 2 Paper — discovery + manual handoff (no MTGDecks live listing crawl)
+#
+# Cloudflare blocks Actions/headless against mtgdecks.net. This workflow:
+#   1) discover-paper: Melee (≥50) + Goldfish name hints → reports/paper/alerts/
+#   2) optional Discord ping for new discovery keys
+#   3) optional run-paper-manual when workflow_dispatch provides URLs / uses drops
+#   4) fixtures path for offline E2E (no live MTGDecks)
+#
+# Full analysis still needs a human MTGDecks URL or saved HTML (run-paper-manual).
+name: Pauper paper
+
+on:
+  schedule:
+    # Every 2 days 15:00 UTC (~00:00 JST) — discovery only
+    - cron: "0 15 */2 * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "discover | manual | fixtures"
+        type: choice
+        options:
+          - discover
+          - manual
+          - fixtures
+        default: discover
+      event_urls:
+        description: "MTGDecks event URL(s), space-separated (manual mode)"
+        type: string
+        default: ""
+      post_discord:
+        description: "POST Discord (discovery alerts and/or new analyzed events)"
+        type: boolean
+        default: true
+      force:
+        description: "Reingest / force Discord dedupe"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pauper-paper
+  cancel-in-progress: false
+
+jobs:
+  paper:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+          # Playwright only needed for optional manual --url live try (often CF-blocked).
+          # Skip browser install on discover/fixtures to save time; install when manual.
+          MODE="${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'discover' }}"
+          if [ "$MODE" = "manual" ]; then
+            python -m playwright install --with-deps chromium || echo "::warning::playwright install failed"
+          fi
+
+      - name: Discover large Pauper candidates
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'discover') }}
+        id: discover
+        env:
+          PYTHONPATH: src
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          ARGS=(discover-paper)
+          POST=1
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.post_discord }}" != "true" ]; then
+            POST=0
+          fi
+          if [ "$POST" = "1" ]; then
+            ARGS+=(--post-discord)
+          else
+            ARGS+=(--discord-dry-run)
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            ARGS+=(--force-discord)
+          fi
+          set +e
+          python -m pauper_meta "${ARGS[@]}"
+          CODE=$?
+          set -e
+          echo "discover_exit=$CODE" >> "$GITHUB_OUTPUT"
+          if [ "$CODE" -ne 0 ]; then
+            echo "::warning::discover-paper exited $CODE"
+          fi
+
+      - name: Manual URL / HTML handoff
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'manual' }}
+        id: manual
+        env:
+          PYTHONPATH: src
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          ARGS=(run-paper-manual)
+          URLS="${{ inputs.event_urls }}"
+          if [ -n "$URLS" ]; then
+            for u in $URLS; do
+              ARGS+=(--url "$u")
+            done
+          fi
+          # Also pick up any dropped HTML in fixtures or data/raw/paper_drops
+          if ls fixtures/mtgdecks/event-*.html >/dev/null 2>&1; then
+            ARGS+=(--html-dir fixtures/mtgdecks)
+          fi
+          if ls data/raw/paper_drops/event-*.html >/dev/null 2>&1; then
+            ARGS+=(--html-dir data/raw/paper_drops)
+          fi
+          if [ "${{ inputs.force }}" = "true" ]; then
+            ARGS+=(--force)
+          fi
+          if [ "${{ inputs.post_discord }}" = "true" ]; then
+            ARGS+=(--post-discord)
+          else
+            ARGS+=(--discord-dry-run)
+          fi
+          # Prefer HTML when present; URL live try is best-effort
+          set +e
+          python -m pauper_meta "${ARGS[@]}"
+          CODE=$?
+          set -e
+          echo "manual_exit=$CODE" >> "$GITHUB_OUTPUT"
+          if [ "$CODE" -ne 0 ]; then
+            echo "::warning::run-paper-manual exited $CODE (CF on --url is expected; use saved HTML)"
+          fi
+
+      - name: Fixtures offline ingest
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'fixtures' }}
+        env:
+          PYTHONPATH: src
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          ARGS=(run-paper --fixtures --offline-only)
+          if [ "${{ inputs.force }}" = "true" ]; then
+            ARGS+=(--force)
+          fi
+          if [ "${{ inputs.post_discord }}" = "true" ]; then
+            ARGS+=(--post-discord)
+          else
+            ARGS+=(--discord-dry-run)
+          fi
+          python -m pauper_meta "${ARGS[@]}"
+
+      - name: Commit paper alerts / reports / DB
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/pauper.sqlite data/paper_meta/ data/discord_posted.json \
+            reports/paper/ || true
+          if git diff --staged --quiet; then
+            echo "No paper artifacts to commit"
+          else
+            git pull --rebase --autostash origin "${{ github.ref_name }}" || true
+            git commit -m "chore: paper discovery/update $(date -u +%Y-%m-%d)" || true
+            git push || echo "::warning::paper push failed (non-fatal)"
+          fi

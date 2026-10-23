@@ -217,7 +217,10 @@ def migrate_renamed_autos(conn: sqlite3.Connection) -> int:
 
 
 def reclassify_all_autos(conn: sqlite3.Connection) -> int:
-    """Re-run heuristic classifier on every deck mainboard → archetype_auto."""
+    """Re-run heuristic classifier on every deck mainboard → archetype_auto.
+
+    Skips decks with no cards (Paper spike Top8 rows keep site-label autos).
+    """
     from .classify import classify_from_card_rows
 
     n = 0
@@ -226,6 +229,8 @@ def reclassify_all_autos(conn: sqlite3.Connection) -> int:
             "SELECT name, qty, board FROM cards WHERE deck_id = ?",
             (row["id"],),
         ).fetchall()
+        if not cards:
+            continue
         arch = classify_from_card_rows(
             [{"name": r["name"], "qty": r["qty"], "board": r["board"]} for r in cards]
         )

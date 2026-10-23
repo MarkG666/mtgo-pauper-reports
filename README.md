@@ -79,6 +79,24 @@ Windows 向けに `run-daily.bat` もあります（タスク スケジューラ
 
 ---
 
+## Paper（Phase 2）
+
+**本線:** 人が MTGDecks の大会 **URL または保存 HTML** を渡す → 分析 → 週次 md → Discord。  
+**発見:** Melee 等から「50人以上がありそう」を薄いアラートに出す（MTGDecks 一覧の自動巡回はしない）。
+
+| 項目 | 内容 |
+|------|------|
+| Workflow | `.github/workflows/paper.yml`（隔日 discover / 手動 URL・fixtures） |
+| 週次成果物 | `reports/paper/weekly/YYYY-Www.md` |
+| 候補アラート | `reports/paper/alerts/YYYY-MM-DD.md` |
+| 発見 | `python -m pauper_meta discover-paper`（Melee ≥50 が主。CF 回避なし） |
+| 手動分析 | `python -m pauper_meta run-paper-manual --html … --source-url …` |
+| Windows 補助 | `scripts\run-paper-manual.bat` / `drop-paper-html.bat` / `run-paper-discover.bat` |
+| Discord | 新規分析イベント＋新規発見アラート（既存 `DISCORD_WEBHOOK_URL`） |
+| Cloudflare | MTGDecks ライブ一覧は無効（`allow_live_listing: false`）。PC の通常ブラウザでページ保存 |
+
+---
+
 ## 注意
 
 - Webhook URL や Secret をコード・README・チャットに書かない  

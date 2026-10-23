@@ -1,0 +1,198 @@
+{
+  "as_of": "2026-10-22",
+  "min_players": 50,
+  "generated_at": "2026-10-22T09:50:15Z",
+  "sources_ok": {
+    "melee": true,
+    "goldfish": true,
+    "watchlist": true
+  },
+  "errors": [],
+  "notes": [
+    "Melee SearchResults formats=Pauper date=LastMonth,ThisWeek,Last7Days → 12 candidates ≥50",
+    "MTGGoldfish name hints (no player count): 3",
+    "watchlist melee_ids=0 matched≥50:0"
+  ],
+  "candidates": [
+    {
+      "name": "Super Pauper 50K - Fuguete Edition",
+      "players": 247,
+      "source": "melee",
+      "source_url": "https://melee.gg/Tournament/View/447619",
+      "source_id": "447619",
+      "start_date": "2026-10-10",
+      "status": "Ended",
+      "organization": "Mont CardShop",
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=Super+Pauper+50K+-+Fuguete+Edition",
+      "notes": "melee date window=LastMonth"
+    },
+    {
+      "name": "Common Island 2 – A Tournament by Pauper to the People",
+      "players": 127,
+      "source": "melee",
+      "source_url": "https://melee.gg/Tournament/View/473064",
+      "source_id": "473064",
+      "start_date": "2026-10-03",
+      "status": "Ended",
+      "organization": "Pauper to the People e.V.",
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=Common+Island+2+%E2%80%93+A+Tournament+by+Pauper+to+the+People",
+      "notes": "melee date window=LastMonth"
+    },
+    {
+      "name": "British Pauper Open",
+      "players": 126,
+      "source": "melee",
+      "source_url": "https://melee.gg/Tournament/View/432234",
+      "source_id": "432234",
+      "start_date": "2026-10-03",
+      "status": "Ended",
+      "organization": "British Pauper Open",
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=British+Pauper+Open",
+      "notes": "melee date window=LastMonth"
+    },
+    {
+      "name": "Central Liga Gaucha de Pauper 2026 - Etapa 9",
+      "players": 77,
+      "source": "melee",
+      "source_url": "https://melee.gg/Tournament/View/486476",
+      "source_id": "486476",
+      "start_date": "2026-10-18",
+      "status": "Ended",
+      "organization": "KOGi Entertainment",
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=Central+Liga+Gaucha+de+Pauper+2026+-+Etapa+9",
+      "notes": "melee date window=Last7Days"
+    },
+    {
+      "name": "Central Liga Gaucha de Pauper 2026 - Etapa 8",
+      "players": 76,
+      "source": "melee",
+      "source_url": "https://melee.gg/Tournament/View/473171",
+      "source_id": "473171",
+      "start_date": "2026-09-27",
+      "status": "Ended",
+      "organization": "KOGi Entertainment",
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=Central+Liga+Gaucha+de+Pauper+2026+-+Etapa+8",
+      "notes": "melee date window=LastMonth"
+    },
+    {
+      "name": "Israel Pauper Nationals 2026 - Kipod League",
+      "players": 66,
+      "source": "melee",
+      "source_url": "https://melee.gg/Tournament/View/471299",
+      "source_id": "471299",
+      "start_date": "2026-10-01",
+      "status": "Ended",
+      "organization": "Kipod Pauper League",
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=Israel+Pauper+Nationals+2026+-+Kipod+League",
+      "notes": "melee date window=LastMonth"
+    },
+    {
+      "name": "Lega Pauper Milano road to Geddon @ Eternal Weekend 2026 - Tappa 4",
+      "players": 56,
+      "source": "melee",
+      "source_url": "https://melee.gg/Tournament/View/471038",
+      "source_id": "471038",
+      "start_date": "2026-09-24",
+      "status": "Ended",
+      "organization": "Lega Pauper Milano",
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=Lega+Pauper+Milano+road+to+Geddon+%40+Eternal+Weekend+2026+-+Tappa+4",
+      "notes": "melee date window=LastMonth"
+    },
+    {
+      "name": "Lega Pauper Lipsia Season 3 Stage 5",
+      "players": 55,
+      "source": "melee",
+      "source_url": "https://melee.gg/Tournament/View/431977",
+      "source_id": "431977",
+      "start_date": "2026-10-10",
+      "status": "Ended",
+      "organization": "Pauper to the People e.V.",
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=Lega+Pauper+Lipsia+Season+3+Stage+5",
+      "notes": "melee date window=LastMonth"
+    },
+    {
+      "name": "BRISTOL PAUPER LEAGUE: AUTUMN '26 - STAGE 8",
+      "players": 53,
+      "source": "melee",
+      "source_url": "https://melee.gg/Tournament/View/483609",
+      "source_id": "483609",
+      "start_date": "2026-10-15",
+      "status": "Ended",
+      "organization": "Pauper League Bristol",
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=BRISTOL+PAUPER+LEAGUE%3A+AUTUMN+%2726+-+STAGE+8",
+      "notes": "melee date window=Last7Days"
+    },
+    {
+      "name": "Lega Pauper Milano road to Geddon @ Eternal Weekend 2026 - Tappa 5",
+      "players": 52,
+      "source": "melee",
+      "source_url": "https://melee.gg/Tournament/View/475829",
+      "source_id": "475829",
+      "start_date": "2026-10-01",
+      "status": "Ended",
+      "organization": "Lega Pauper Milano",
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=Lega+Pauper+Milano+road+to+Geddon+%40+Eternal+Weekend+2026+-+Tappa+5",
+      "notes": "melee date window=LastMonth"
+    },
+    {
+      "name": "Lega Pauper Milano road to Geddon @ Eternal Weekend 2026 - Tappa 7",
+      "players": 52,
+      "source": "melee",
+      "source_url": "https://melee.gg/Tournament/View/485331",
+      "source_id": "485331",
+      "start_date": "2026-10-15",
+      "status": "Ended",
+      "organization": "Lega Pauper Milano",
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=Lega+Pauper+Milano+road+to+Geddon+%40+Eternal+Weekend+2026+-+Tappa+7",
+      "notes": "melee date window=Last7Days"
+    },
+    {
+      "name": "Lega Pauper Milano road to Geddon @ Eternal Weekend 2026 - Tappa 6",
+      "players": 51,
+      "source": "melee",
+      "source_url": "https://melee.gg/Tournament/View/480892",
+      "source_id": "480892",
+      "start_date": "2026-10-08",
+      "status": "Ended",
+      "organization": "Lega Pauper Milano",
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=Lega+Pauper+Milano+road+to+Geddon+%40+Eternal+Weekend+2026+-+Tappa+6",
+      "notes": "melee date window=LastMonth"
+    },
+    {
+      "name": "Finale Geddon Series road to Paupergeddon AUTUMN Ed. - Lucca 2026",
+      "players": null,
+      "source": "goldfish",
+      "source_url": "https://www.mtggoldfish.com/tournament/67445",
+      "source_id": "67445",
+      "start_date": null,
+      "status": null,
+      "organization": null,
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=Finale+Geddon+Series+road+to+Paupergeddon+AUTUMN+Ed.+-+Lucca+2026",
+      "notes": "名前のみ（人数なし）。MTGDecks URL を人が確認"
+    },
+    {
+      "name": "Lega Pauper Albenga tappa 9",
+      "players": null,
+      "source": "goldfish",
+      "source_url": "https://www.mtggoldfish.com/tournament/67444",
+      "source_id": "67444",
+      "start_date": null,
+      "status": null,
+      "organization": null,
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=Lega+Pauper+Albenga+tappa+9",
+      "notes": "名前のみ（人数なし）。MTGDecks URL を人が確認"
+    },
+    {
+      "name": "Lega Pauper Genova, Autumn Season Lunedi 19 Ottobre Ore 20.30",
+      "players": null,
+      "source": "goldfish",
+      "source_url": "https://www.mtggoldfish.com/tournament/67425",
+      "source_id": "67425",
+      "start_date": null,
+      "status": null,
+      "organization": null,
+      "mtgdecks_search": "https://mtgdecks.net/Pauper/tournaments?name=Lega+Pauper+Genova%2C+Autumn+Season+Lunedi+19+Ottobre+Ore+20.30",
+      "notes": "名前のみ（人数なし）。MTGDecks URL を人が確認"
+    }
+  ]
+}
