@@ -151,7 +151,8 @@ jobs:
             cat "$OUT"
           }
           post_one "$TODAY"
-          # Catch-up may post yesterday once if never posted (discord_posted.json dedupe)
+          # Yesterday once if never posted AND that JST day has events
+          # (discord_summary skips empty days; discord_posted.json dedupes)
           post_one "$YESTERDAY"
 
       - name: Discord weekly digest

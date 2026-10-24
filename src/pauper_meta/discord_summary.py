@@ -315,6 +315,17 @@ def generate_and_maybe_post(
                 track_mode,
                 rd.isoformat(),
             )
+        elif (
+            track_mode == "daily"
+            and not force_post
+            and not data.events
+        ):
+            # No Challenge/Prelim on this JST report day — do not post an empty
+            # or carry-forward summary (avoids duplicate-looking posts).
+            log.info(
+                "Discord daily for %s has no events — skipping post (not marked)",
+                rd.isoformat(),
+            )
         else:
             url = resolve_webhook_url(webhook_url)
             if not url:
@@ -323,6 +334,7 @@ def generate_and_maybe_post(
                 )
             else:
                 post_discord_webhook(text, url)
+                # Mark only after a successful webhook (post_discord_webhook raises otherwise)
                 mark_discord_posted(track_mode, rd)
                 log.info("posted %s summary to Discord (%s chars)", mode, len(text))
 

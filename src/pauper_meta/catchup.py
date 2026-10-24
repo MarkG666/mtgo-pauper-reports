@@ -4,8 +4,17 @@ On each successful schedule path we look at **yesterday (JST)** only:
 
 Re-ingest / regenerate when:
 
-1. ``reports/daily/YYYY-MM-DD.md`` is missing, or
-2. Any Challenge/Preliminary event for that report date looks **incomplete**.
+1. ``reports/daily/YYYY-MM-DD.md`` is missing **and** that JST day has at least
+   one Challenge/Preliminary event, or
+2. Any Challenge/Preliminary event for that JST report date looks **incomplete**.
+
+Skip when:
+
+- Already recorded in ``data/discord_posted.json`` for that day **and** no
+  incomplete events remain (Discord does not need another try; report md may
+  already exist from a prior successful path).
+- No Challenge/Preliminary events for that JST day (do not invent a report by
+  carrying forward another day's event).
 
 ## Incomplete (definition)
 
@@ -18,7 +27,7 @@ Documented here and used by ``event_incomplete_reason``:
   ``finish_rank`` in 1..8, or (b) no bracket matches yet and zero decks have
   ``finish_rank`` set while ``player_count`` suggests a finished field (≥16).
   Preliminary is not judged on Top8 ranks.
-- **Report absent**: handled at the day level (not per-event).
+- **Report absent**: only with events present for that JST day (not per-event).
 
 Events that finish >24h late can still be missed; cancelled listings may look
 incomplete once — see project doc ``yesterday-catchup.md``.
@@ -33,10 +42,11 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from .db import db_session, init_db
+from .discord_summary import was_discord_posted
 from .ingest import ingest_event_html, run_ingest
 from .overrides import apply_all
 from .paths import DB_PATH, REPORTS_DIR, ensure_dirs
-from .report_daily import today_jst, write_report
+from .report_daily import _events_on_date, today_jst, write_report
 from .fetch_mtgo import MtgoFetcher
 
 logger = logging.getLogger(__name__)
@@ -112,13 +122,8 @@ def event_incomplete_reason(conn: sqlite3.Connection, ev: sqlite3.Row) -> str | 
 
 
 def events_on_report_date(conn: sqlite3.Connection, d: date) -> list[sqlite3.Row]:
-    """Events whose UTC start_time date string equals ``d`` (same as daily report)."""
-    return list(
-        conn.execute(
-            "SELECT * FROM events WHERE start_time LIKE ? ORDER BY start_time, name",
-            (d.isoformat() + "%",),
-        ).fetchall()
-    )
+    """Events whose **JST** start date equals ``d`` (same as daily report)."""
+    return list(_events_on_date(conn, d))
 
 
 def day_catchup_needed(
@@ -129,9 +134,6 @@ def day_catchup_needed(
     incomplete: list[IncompleteEvent] = []
     report_path = REPORTS_DIR / f"{day.isoformat()}.md"
     events = events_on_report_date(conn, day)
-
-    if not report_path.exists():
-        reasons.append(f"missing_report:{report_path.name}")
 
     for ev in events:
         reason = event_incomplete_reason(conn, ev)
@@ -144,6 +146,25 @@ def day_catchup_needed(
                 )
             )
             reasons.append(f"incomplete:{ev['id']}:{reason}")
+
+    if not events:
+        # No Challenge/Prelim on this JST day — do not invent a carry-forward report.
+        logger.info(
+            "catch-up day=%s: no events (JST); skip missing_report invent",
+            day.isoformat(),
+        )
+        return False, ["no_events_jst"], incomplete
+
+    if not report_path.exists():
+        reasons.append(f"missing_report:{report_path.name}")
+
+    if was_discord_posted("daily", day) and not incomplete:
+        # Already delivered; nothing incomplete to refresh.
+        logger.info(
+            "catch-up day=%s: already discord_posted and complete — skip",
+            day.isoformat(),
+        )
+        return False, ["already_discord_posted"], incomplete
 
     needed = bool(reasons)
     return needed, reasons, incomplete

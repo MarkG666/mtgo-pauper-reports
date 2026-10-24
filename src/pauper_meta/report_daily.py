@@ -126,14 +126,44 @@ def today_jst(now: datetime | None = None) -> date:
     return now.date()
 
 
-def _parse_event_date(start_time: str | None) -> date | None:
+def _parse_event_start_utc(start_time: str | None) -> datetime | None:
+    """Parse MTGO ``start_time`` as UTC (DB stores naive UTC wall clock)."""
     if not start_time:
         return None
-    text = start_time.strip()[:10]
-    try:
-        return date.fromisoformat(text)
-    except ValueError:
+    text = start_time.strip()
+    if not text:
         return None
+    # Common shapes: ``2026-10-22 19:00:00.0``, ``2026-10-22T19:00:00``, with/without Z
+    text = text.replace("Z", "").replace("z", "")
+    if "T" not in text and " " in text:
+        text = text.replace(" ", "T", 1)
+    # Drop fractional seconds that fromisoformat may not like uniformly
+    if "." in text:
+        text = text.split(".", 1)[0]
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            return datetime.fromisoformat(text[:10]).replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt
+
+
+def _parse_event_date(start_time: str | None) -> date | None:
+    """JST calendar date of event start — the report day for this event.
+
+    MTGO ``start_time`` is UTC. A Friday 04:00 JST Challenge is stored as
+    Thursday 19:00 UTC; report day must be Friday (JST), not Thursday (UTC).
+    """
+    dt = _parse_event_start_utc(start_time)
+    if dt is None:
+        return None
+    return dt.astimezone(JST).date()
 
 
 def _place_label(rank: int) -> str:
@@ -612,26 +642,32 @@ def _top8_bracket(conn: sqlite3.Connection, event_id: str) -> list[Top8Entry]:
 
 
 def _events_on_date(conn: sqlite3.Connection, d: date) -> list[sqlite3.Row]:
-    return conn.execute(
-        "SELECT * FROM events WHERE start_time LIKE ? ORDER BY start_time, name",
-        (d.isoformat() + "%",),
+    """Events whose **JST** start date equals ``d``.
+
+    DB ``start_time`` is UTC text, so we pull a ±1 UTC-day window and filter
+    by ``_parse_event_date`` (JST).
+    """
+    prev = (d - timedelta(days=1)).isoformat()
+    cur = d.isoformat()
+    nxt = (d + timedelta(days=1)).isoformat()
+    rows = conn.execute(
+        """
+        SELECT * FROM events
+        WHERE start_time LIKE ? OR start_time LIKE ? OR start_time LIKE ?
+        ORDER BY start_time, name
+        """,
+        (prev + "%", cur + "%", nxt + "%"),
     ).fetchall()
+    return [r for r in rows if _parse_event_date(r["start_time"]) == d]
 
 
 def _events_for_report(conn: sqlite3.Connection, report_date: date) -> list[sqlite3.Row]:
-    rows = _events_on_date(conn, report_date)
-    if rows:
-        return list(rows)
-    all_ev = conn.execute("SELECT * FROM events ORDER BY start_time DESC").fetchall()
-    latest: date | None = None
-    for ev in all_ev:
-        ed = _parse_event_date(ev["start_time"])
-        if ed and ed <= report_date:
-            latest = ed
-            break
-    if latest is None:
-        return []
-    return list(_events_on_date(conn, latest))
+    """Events that belong on ``report_date`` (JST). No carry-forward fallback.
+
+    Empty days stay empty so Discord/catch-up do not invent a duplicate of
+    another day's Challenge.
+    """
+    return list(_events_on_date(conn, report_date))
 
 
 def _trend(current: Counter[str], previous: Counter[str]) -> list[TrendDelta]:
