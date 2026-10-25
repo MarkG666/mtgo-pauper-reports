@@ -6,15 +6,19 @@ Re-ingest / regenerate when:
 
 1. ``reports/daily/YYYY-MM-DD.md`` is missing **and** that JST day has at least
    one Challenge/Preliminary event, or
-2. Any Challenge/Preliminary event for that JST report date looks **incomplete**.
+2. Any Challenge/Preliminary event for that JST report date looks **incomplete**, or
+3. The report md exists but is **stale** — a DB event id for that JST day does not
+   appear in the md (typical: Friday 04:00 posted at 13:00 JST, then 22:00 lands).
 
 Skip when:
 
 - Already recorded in ``data/discord_posted.json`` for that day **and** no
-  incomplete events remain (Discord does not need another try; report md may
-  already exist from a prior successful path).
+  incomplete events remain **and** the report is not missing/stale.
 - No Challenge/Preliminary events for that JST day (do not invent a report by
   carrying forward another day's event).
+
+When catch-up regenerates a day that was already discord_posted (stale or
+incomplete refresh), it **unmarks** that date so the Discord step can re-post.
 
 ## Incomplete (definition)
 
@@ -28,6 +32,7 @@ Documented here and used by ``event_incomplete_reason``:
   ``finish_rank`` set while ``player_count`` suggests a finished field (≥16).
   Preliminary is not judged on Top8 ranks.
 - **Report absent**: only with events present for that JST day (not per-event).
+- **Stale report**: md missing an event id that is now in the DB for that day.
 
 Events that finish >24h late can still be missed; cancelled listings may look
 incomplete once — see project doc ``yesterday-catchup.md``.
@@ -42,7 +47,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from .db import db_session, init_db
-from .discord_summary import was_discord_posted
+from .discord_summary import unmark_discord_posted, was_discord_posted
 from .ingest import ingest_event_html, run_ingest
 from .overrides import apply_all
 from .paths import DB_PATH, REPORTS_DIR, ensure_dirs
@@ -157,9 +162,21 @@ def day_catchup_needed(
 
     if not report_path.exists():
         reasons.append(f"missing_report:{report_path.name}")
+    else:
+        # Same JST day can host multiple Challenges (e.g. Fri 04:00 + 22:00).
+        # If the md was written before a later event was ingested, refresh it.
+        md = report_path.read_text(encoding="utf-8")
+        for ev in events:
+            eid = str(ev["id"])
+            if eid not in md:
+                reasons.append(f"stale_report_missing_event:{eid}")
 
-    if was_discord_posted("daily", day) and not incomplete:
-        # Already delivered; nothing incomplete to refresh.
+    stale_or_missing = any(
+        r.startswith("missing_report:") or r.startswith("stale_report_missing_event:")
+        for r in reasons
+    )
+    if was_discord_posted("daily", day) and not incomplete and not stale_or_missing:
+        # Already delivered; report covers every known event; nothing to refresh.
         logger.info(
             "catch-up day=%s: already discord_posted and complete — skip",
             day.isoformat(),
@@ -269,5 +286,12 @@ def run_yesterday_catchup(
         result.report_path = str(report_path)
         result.report_regenerated = True
         logger.info("catch-up report written: %s", report_path)
+
+    # Allow Discord step to re-post updated content (new same-day event, ranks, …).
+    if unmark_discord_posted("daily", yesterday):
+        logger.info(
+            "catch-up unmarked discord_posted for %s so Discord can re-post",
+            yesterday.isoformat(),
+        )
 
     return result

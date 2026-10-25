@@ -110,13 +110,19 @@ jobs:
           echo "Detected run_daily=$DAILY run_weekly=$WEEKLY schedule='$SCHEDULE' gate=$GATE_RUN"
 
       - name: Run daily ingest + report (+ yesterday catch-up)
+        id: daily
         if: steps.mode.outputs.run_daily == '1'
         env:
           PYTHONPATH: src
         run: python -m pauper_meta run-daily
 
+      # Lookback HTML flakes (old events) make run-daily exit 2 AFTER writing today's
+      # report. Still commit + Discord so a partial lookback miss cannot block delivery.
       - name: Commit DB and reports
-        if: steps.mode.outputs.run_daily == '1'
+        if: >-
+          always() &&
+          steps.mode.outputs.run_daily == '1' &&
+          (steps.daily.outcome == 'success' || steps.daily.outcome == 'failure')
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -129,15 +135,25 @@ jobs:
             echo "Pushed DB + reports"
           fi
 
-      - name: Discord daily summary (today + yesterday; deduped)
-        if: steps.mode.outputs.run_daily == '1'
+      - name: Discord daily summary (today + recent unposted; deduped)
+        if: >-
+          always() &&
+          steps.mode.outputs.run_daily == '1' &&
+          (steps.daily.outcome == 'success' || steps.daily.outcome == 'failure')
         env:
           PYTHONPATH: src
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          TODAY=$(python -c "from pauper_meta.report_daily import today_jst; print(today_jst().isoformat())")
-          YESTERDAY=$(python -c "from datetime import timedelta; from pauper_meta.report_daily import today_jst; print((today_jst()-timedelta(days=1)).isoformat())")
+          # today, yesterday, and day-before (covers evening Challenges that land
+          # after the 13:00 JST post, and one delayed catch-up window)
+          mapfile -t DATES < <(python -c "
+          from datetime import timedelta
+          from pauper_meta.report_daily import today_jst
+          t = today_jst()
+          for i in range(3):
+              print((t - timedelta(days=i)).isoformat())
+          ")
           post_one() {
             local DATE="$1"
             local OUT="/tmp/discord-daily-$DATE.txt"
@@ -150,10 +166,9 @@ jobs:
             echo "----- daily summary $DATE -----"
             cat "$OUT"
           }
-          post_one "$TODAY"
-          # Yesterday once if never posted AND that JST day has events
-          # (discord_summary skips empty days; discord_posted.json dedupes)
-          post_one "$YESTERDAY"
+          for DATE in "${DATES[@]}"; do
+            post_one "$DATE"
+          done
 
       - name: Discord weekly digest
         if: steps.mode.outputs.run_weekly == '1'
@@ -172,7 +187,15 @@ jobs:
           cat /tmp/discord-weekly.txt
 
       - name: Commit Discord posted tracker
-        if: steps.mode.outputs.run_daily == '1' || steps.mode.outputs.run_weekly == '1'
+        if: >-
+          always() &&
+          (
+            (
+              steps.mode.outputs.run_daily == '1' &&
+              (steps.daily.outcome == 'success' || steps.daily.outcome == 'failure')
+            ) ||
+            steps.mode.outputs.run_weekly == '1'
+          )
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

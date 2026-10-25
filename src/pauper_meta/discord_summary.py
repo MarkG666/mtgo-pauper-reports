@@ -61,6 +61,28 @@ def mark_discord_posted(mode: str, report_date: date, path: Path | None = None) 
     log.info("marked discord posted mode=%s date=%s path=%s", key, report_date.isoformat(), p)
 
 
+def unmark_discord_posted(mode: str, report_date: date, path: Path | None = None) -> bool:
+    """Remove a mode+date from the tracker so the next Discord step can re-post.
+
+    Used when catch-up regenerates a day that gained new events after an earlier
+    post (e.g. Friday 04:00 JST Challenge posted at 13:00, then 22:00 lands).
+    Returns True if the date was present and removed.
+    """
+    ensure_dirs()
+    p = path or DISCORD_POSTED_PATH
+    data = load_discord_posted(p)
+    key = "weekly" if mode == "weekly" else "daily"
+    dates = set(data.get(key, []))
+    iso = report_date.isoformat()
+    if iso not in dates:
+        return False
+    dates.discard(iso)
+    data[key] = sorted(dates)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    log.info("unmarked discord posted mode=%s date=%s path=%s", key, iso, p)
+    return True
+
+
 def report_github_url(report_date: str, *, repo: str | None = None, branch: str | None = None) -> str:
     repo = repo or os.environ.get("GITHUB_REPOSITORY") or DEFAULT_REPO
     branch = branch or os.environ.get("GITHUB_REF_NAME") or DEFAULT_BRANCH
