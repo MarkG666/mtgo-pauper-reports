@@ -19,6 +19,7 @@
 - 2026-10-21: Glitters 廃止 → Boros / Mardu / Jeskai / 4c Hawk（Snacker は色に数えない）
 - 2026-10-21: **Ruby Storm** 追加（Anarchomancer + Thornscape Familiar + Needle/Woodlot）。Kampo 基準。aliases: RubyStorm / RG Storm / Gruul Storm
 - 2026-10-21: **Faeries 色分割** — 基幹（Spellstutter + Ninja/Seer）が同じでも黒→**Dimir**、赤→**Izzet**、両方→**Grixis**、なし→**Mono-Blue**。Sneaky Snacker のみでは赤に数えない。aliases: UR Faeries → Izzet Faeries
+- 2026-10-25: **Affinity 色分割** — 旧単一 `Grixis Affinity` をスプラッシュ・キーで Dimir / Grixis / Jund / Esper 等に分割（Faeries 同型）。コア無し Bargain ヒットはデモート。監査: ストア `docs/archetype-audit-affinity-2026-10-25.md`
 
 ## 順位 / Top8
 
