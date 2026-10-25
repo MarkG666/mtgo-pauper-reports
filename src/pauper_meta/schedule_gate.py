@@ -1,18 +1,22 @@
 """DST-aware schedule gate for GitHub Actions.
 
-Desired wall clocks (Japan has no DST; JST = UTC+9 always):
+Desired Discord arrival (Japan has no DST; JST = UTC+9 always):
 
-- US Eastern **DST (EDT)**: daily at **13:00 JST** = **04:00 UTC**
-- US Eastern **standard (EST)**: daily at **14:00 JST** = **05:00 UTC**
+- US Eastern **DST (EDT)**: **~13:00–14:00 JST** (after typical Actions delay)
+- US Eastern **standard (EST)**: **~14:00–15:00 JST** (Fri Challenge ends ~14:00 JST in EST)
 
-Workflow crons fire at both 04:00 and 05:00 UTC daily (and Monday :30 for weekly).
+Cron UTC hours are advanced ~4h vs a naive 13:00/14:00 JST wall clock because
+GitHub Actions ``schedule`` often starts ~4.5–5h late. Declared crons:
+
+- EDT daily ``0 0 * * *`` (00:00 UTC) / weekly ``30 0 * * 1``
+- EST daily ``0 1 * * *`` (01:00 UTC) / weekly ``30 1 * * 1``
+
 This module decides whether *this cron expression* is the intended one by checking
 ``America/New_York`` DST via ``zoneinfo``.
 
-**Important:** GitHub Actions ``schedule`` triggers are often delayed by minutes to
-hours. Do **not** compare ``datetime.now().hour`` to the intended UTC hour — a
-04:00 UTC cron that starts at 09:00 UTC would then be skipped forever. Gate on
-``github.event.schedule`` (which cron fired) instead.
+**Important:** Do **not** compare ``datetime.now().hour`` to the intended UTC hour
+under Actions — a 00:00 UTC cron that starts at 05:00 UTC would then be skipped.
+Gate on ``github.event.schedule`` (which cron fired) instead.
 
 Prefer writing ``should_run`` to ``GITHUB_OUTPUT`` and exiting 0 always when
 invoked from Actions — see ``main()``.
@@ -29,17 +33,17 @@ from zoneinfo import ZoneInfo
 NY = ZoneInfo("America/New_York")
 UTC = ZoneInfo("UTC")
 
-# UTC hour for the daily job given NY DST state
-UTC_HOUR_EDT = 4  # 13:00 JST while US on DST
-UTC_HOUR_EST = 5  # 14:00 JST while US on standard time
+# UTC hour of the *cron expression* (advanced for Actions delay), by NY DST state
+UTC_HOUR_EDT = 0  # expect ~13:00–14:00 JST delivery with ~5h delay
+UTC_HOUR_EST = 1  # expect ~14:00–15:00 JST (EST Fri Challenge ends ~14:00 JST)
 
 WEEKLY_MINUTE = 30  # Monday digest: same UTC hour as daily, +30 minutes
 
 # Cron expressions declared in .github/workflows/daily.yml
-CRON_DAILY_EDT = "0 4 * * *"
-CRON_DAILY_EST = "0 5 * * *"
-CRON_WEEKLY_EDT = "30 4 * * 1"
-CRON_WEEKLY_EST = "30 5 * * 1"
+CRON_DAILY_EDT = "0 0 * * *"
+CRON_DAILY_EST = "0 1 * * *"
+CRON_WEEKLY_EDT = "30 0 * * 1"
+CRON_WEEKLY_EST = "30 1 * * 1"
 
 
 def us_eastern_in_dst(now: datetime | None = None) -> bool:
@@ -53,13 +57,15 @@ def us_eastern_in_dst(now: datetime | None = None) -> bool:
 
 
 def intended_daily_utc_hour(now: datetime | None = None) -> int:
-    """Return 4 (EDT / 13:00 JST) or 5 (EST / 14:00 JST)."""
+    """Return cron UTC hour: 0 (EDT) or 1 (EST)."""
     return UTC_HOUR_EDT if us_eastern_in_dst(now) else UTC_HOUR_EST
 
 
 def intended_jst_label(now: datetime | None = None) -> str:
-    hour_jst = 13 if us_eastern_in_dst(now) else 14
-    return f"{hour_jst:02d}:00 JST"
+    """Human label for expected delivery window (not the cron wall clock)."""
+    if us_eastern_in_dst(now):
+        return "~13:00-14:00 JST"
+    return "~14:00-15:00 JST"
 
 
 def parse_cron_utc_hour(schedule: str) -> int | None:
@@ -81,7 +87,7 @@ def should_run_for_schedule(
 ) -> bool:
     """True if this Actions cron expression is the DST-correct slot.
 
-    ``schedule`` is ``github.event.schedule`` (e.g. ``\"0 4 * * *\"``). When
+    ``schedule`` is ``github.event.schedule`` (e.g. ``\"0 0 * * *\"``). When
     empty (local/dev), fall back to wall-clock hour matching — fine for tests,
     unsafe for delayed Actions runners.
     """

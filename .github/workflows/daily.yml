@@ -1,20 +1,21 @@
 # Daily Pauper meta + Discord summary (案2)
 #
-# Wall clocks (JST; Japan has no DST):
-#   US Eastern DST (EDT): 13:00 JST = 04:00 UTC
-#   US Eastern standard (EST): 14:00 JST = 05:00 UTC
+# Cron is advanced ~4h vs wall intent because Actions schedule often delays ~4.5–5h
+# (see docs/actions-cron-delay in project store). Expected Discord arrival:
+#   US Eastern DST (EDT): cron 00:00 UTC → ~13:00–14:00 JST with ~5h delay
+#   US Eastern standard (EST): cron 01:00 UTC → ~14:00–15:00 JST (Fri Challenge ends ~14:00 JST in EST)
 # Crons fire at both hours; schedule_gate picks the correct cron via America/New_York.
 # Gate on github.event.schedule (which cron fired), NOT runner wall-clock hour —
-# Actions schedule triggers are often delayed by hours and would otherwise skip.
-# Weekly digest: Monday, same UTC hour as daily + 30 minutes (04:30 / 05:30).
+# delayed runners would otherwise skip forever.
+# Weekly digest: Monday, same UTC hour as daily + 30 minutes (00:30 / 01:30).
 name: Pauper daily
 
 on:
   schedule:
-    - cron: "0 4 * * *"       # daily candidate (EDT → 13:00 JST)
-    - cron: "0 5 * * *"       # daily candidate (EST → 14:00 JST)
-    - cron: "30 4 * * 1"      # Monday weekly candidate (+30m after EDT daily)
-    - cron: "30 5 * * 1"      # Monday weekly candidate (+30m after EST daily)
+    - cron: "0 0 * * *"       # daily candidate (EDT; expect ~13–14 JST after delay)
+    - cron: "0 1 * * *"       # daily candidate (EST; expect ~14–15 JST after delay)
+    - cron: "30 0 * * 1"      # Monday weekly candidate (+30m after EDT daily)
+    - cron: "30 1 * * 1"      # Monday weekly candidate (+30m after EST daily)
   workflow_dispatch:
     inputs:
       post_weekly:
@@ -63,7 +64,7 @@ jobs:
             FORCE=1
           fi
           case "$SCHEDULE" in
-            "30 4 * * 1"|"30 5 * * 1") KIND=weekly ;;
+            "30 0 * * 1"|"30 1 * * 1") KIND=weekly ;;
           esac
           if [ "$FORCE" = "1" ]; then
             python -m pauper_meta.schedule_gate --kind "$KIND" --schedule "$SCHEDULE" --force
@@ -80,7 +81,7 @@ jobs:
           SCHEDULE="${{ github.event.schedule }}"
           WEEKLY=0
           DAILY=1
-          # Wrong DST hour → no-op success (both 04:00 and 05:00 fire daily)
+          # Wrong DST hour → no-op success (both 00:00 and 01:00 fire daily)
           if [ "${{ github.event_name }}" = "schedule" ] && [ "$GATE_RUN" != "1" ]; then
             echo "Skipping: DST gate said should_run=$GATE_RUN for schedule='$SCHEDULE'"
             echo "run_daily=0" >> "$GITHUB_OUTPUT"
@@ -89,7 +90,7 @@ jobs:
             exit 0
           fi
           case "$SCHEDULE" in
-            "30 4 * * 1"|"30 5 * * 1")
+            "30 0 * * 1"|"30 1 * * 1")
               WEEKLY=1
               # Monday weekly slot: digest only (daily already ran at :00)
               DAILY=0
