@@ -8,6 +8,8 @@ from dataclasses import dataclass
 # (canonical_name, weight, signature_cards)
 # Weights are additive; highest score wins. Ties → first listed among max.
 SIGNATURES: list[tuple[str, list[tuple[str, int]]]] = [
+    # Affinity family base score (color via _resolve_affinity_family).
+    # Shared artifact-land / sac package; Dimir ≠ Grixis ≠ Esper ≠ Jund.
     (
         "Grixis Affinity",
         [
@@ -457,6 +459,165 @@ _FAERIES_FAMILY = frozenset(
     {"Dimir Faeries", "Izzet Faeries", "Mono-Blue Faeries", "Grixis Faeries"}
 )
 
+# Affinity artifact lands / bridges (core gate). Basics alone do not count.
+_AFFINITY_ARTIFACT_LANDS = frozenset(
+    {
+        "Seat of the Synod",
+        "Vault of Whispers",
+        "Great Furnace",
+        "Ancient Den",
+        "Tree of Tales",
+        "Darksteel Citadel",
+        "Mistvault Bridge",
+        "Drossforge Bridge",
+        "Silverbluff Bridge",
+        "Rustvale Bridge",
+        "Razortide Bridge",
+        "Goldmire Bridge",
+        "Slagwoods Bridge",
+        "Tanglepool Bridge",
+        "Darkmoss Bridge",
+    }
+)
+
+# Affinity color naming (mainboard). Sneaky Snacker alone does not add a color.
+_AFFINITY_WHITE_SPLASH = frozenset(
+    {
+        "Dispatch",
+        "Thraben Inspector",
+        "Novice Inspector",
+        "Leonardo, Big Brother",
+        "Ardent Recruit",
+        "Thraben Charm",
+        "Salt Road Packbeast",
+        "Kor Skyfisher",
+        "Mardu Devotee",
+        "Lunarch Veteran",
+        "Palace Sentinels",
+        "Darval, Whose Web Protects",
+    }
+)
+_AFFINITY_BLUE_SPLASH = frozenset(
+    {
+        "Thoughtcast",
+        "Cryogen Relic",
+        "Gearseeker Serpent",
+        "Metallic Rebuke",
+        "Hard Evidence",
+        "Utrom Monitor",
+        "Kenku Artificer",
+        "Baleful Strix",
+        "Moon-Circuit Hacker",
+        "Sewer-veillance Cam",
+        "Of One Mind",
+        "Lórien Revealed",
+        "Lorien Revealed",
+        "Counterspell",
+        "Abjure",
+        "Somber Hoverguard",
+        "Network Disruptor",
+        "Silver Raven",
+        "Reverse Engineer",
+        "Ninja of the Deep Hours",
+    }
+)
+_AFFINITY_BLACK_SPLASH = frozenset(
+    {
+        "Refurbished Familiar",
+        "Reckoner's Bargain",
+        "Deadly Dispute",
+        "Blood Fountain",
+        "Cast Down",
+        "Fanatical Offering",
+        "Toxin Analysis",
+        "Eviscerator's Insight",
+        "Black Mage's Rod",
+        "Gixian Infiltrator",
+        "Defile",
+        "Tithing Blade",
+        "Snuff Out",
+        "Troll of Khazad-dum",
+        "Troll of Khazad-dûm",
+        "Crypt Rats",
+        "Drown in Sorrow",
+        "Thorn of the Black Rose",
+        "Duress",
+        "Terminate",
+        "Mukotai Ambusher",
+        "Cut Down",
+    }
+)
+_AFFINITY_RED_SPLASH = frozenset(
+    {
+        "Krark-Clan Shaman",
+        "Galvanic Blast",
+        "Makeshift Munitions",
+        "Cleansing Wildfire",
+        "Torch the Tower",
+        "Lightning Bolt",
+        "Experimental Synthesizer",
+        "Voldaren Epicure",
+        "Pyroblast",
+        "Red Elemental Blast",
+        "Cast into the Fire",
+        "Gorilla Shaman",
+        "Breath Weapon",
+    }
+)
+_AFFINITY_GREEN_SPLASH = frozenset(
+    {
+        "Writhing Chrysalis",
+        "Pulse of Murasa",
+        "Nyxborn Hydra",
+        "Weather the Storm",
+        "Avenging Hunter",
+        "Heaped Harvest",
+        "Sagu Wildling",
+        "Moment's Peace",
+        "Tangle",
+        "Malevolent Rumble",
+        "Troublemaker Ouphe",
+    }
+)
+
+# WUBRG letter → Affinity display name (missing key → "{letters} Affinity").
+_AFFINITY_COLOR_NAMES: dict[str, str] = {
+    "UBR": "Grixis Affinity",
+    "BRG": "Jund Affinity",
+    "UB": "Dimir Affinity",
+    "BR": "Rakdos Affinity",
+    "WUB": "Esper Affinity",
+    "WU": "Azorius Affinity",
+    "WUR": "Jeskai Affinity",
+    "BG": "Golgari Affinity",
+    "B": "Mono-Black Affinity",
+    "U": "Mono-Blue Affinity",
+    "R": "Mono-Red Affinity",
+    "UBG": "Sultai Affinity",
+    "URG": "Temur Affinity",
+    "WBR": "Mardu Affinity",
+    "WBG": "Abzan Affinity",
+    "WRG": "Naya Affinity",
+    "WUBR": "4c Affinity",
+    "UBRG": "4c Affinity",
+    "WUBG": "4c Affinity",
+    "WURG": "4c Affinity",
+    "WBRG": "4c Affinity",
+    "WUBRG": "5c Affinity",
+    "RG": "Gruul Affinity",
+    "WB": "Orzhov Affinity",
+    "UR": "Izzet Affinity",
+    "WG": "Selesnya Affinity",
+    "W": "Mono-White Affinity",
+    "G": "Mono-Green Affinity",
+}
+
+_AFFINITY_FAMILY = frozenset(_AFFINITY_COLOR_NAMES.values())
+
+
+def _is_affinity_name(name: str) -> bool:
+    return name in _AFFINITY_FAMILY or name.endswith(" Affinity")
+
 
 @dataclass
 class Classification:
@@ -607,6 +768,71 @@ def _resolve_faeries_family(counts: Counter[str], best_name: str, scores: list[t
     return best_name
 
 
+def _affinity_land_count(counts: Counter[str]) -> int:
+    return sum(counts.get(n, 0) for n in _AFFINITY_ARTIFACT_LANDS)
+
+
+def _is_affinity_core(counts: Counter[str]) -> bool:
+    """Artifact-land Affinity package (classic Thoughtcast/Enforcer or sac Familiar)."""
+    lands = _affinity_land_count(counts)
+    thoughtcast = counts.get("Thoughtcast", 0)
+    enforcers = counts.get("Myr Enforcer", 0) + counts.get("Sojourner's Companion", 0)
+    familiar = counts.get("Refurbished Familiar", 0)
+    if lands >= 4 and (thoughtcast >= 2 or enforcers >= 2):
+        return True
+    # Sac Affinity (often Grixis/Jund): Familiar + KCS/Munitions + bridges
+    if lands >= 3 and familiar >= 3 and (
+        counts.get("Krark-Clan Shaman", 0) >= 1
+        or counts.get("Makeshift Munitions", 0) >= 1
+        or (
+            counts.get("Ichor Wellspring", 0) >= 2
+            and counts.get("Reckoner's Bargain", 0) + counts.get("Deadly Dispute", 0) >= 2
+        )
+    ):
+        return True
+    return False
+
+
+def _affinity_variant_name(counts: Counter[str]) -> str:
+    """Split Affinity by splash identity cards (not by shared Enforcer/Familiar core).
+
+    Sneaky Snacker alone does not add a color (same as Hawk / Faeries).
+    Writhing Chrysalis counts as green even when MTGO omits card colors.
+    """
+    has_w = any(counts.get(c, 0) > 0 for c in _AFFINITY_WHITE_SPLASH)
+    has_u = any(counts.get(c, 0) > 0 for c in _AFFINITY_BLUE_SPLASH)
+    has_b = any(counts.get(c, 0) > 0 for c in _AFFINITY_BLACK_SPLASH)
+    has_r = any(counts.get(c, 0) > 0 for c in _AFFINITY_RED_SPLASH)
+    has_g = any(counts.get(c, 0) > 0 for c in _AFFINITY_GREEN_SPLASH)
+    key = "".join(
+        letter
+        for letter, present in (
+            ("W", has_w),
+            ("U", has_u),
+            ("B", has_b),
+            ("R", has_r),
+            ("G", has_g),
+        )
+        if present
+    )
+    if not key:
+        return "Mono-Blue Affinity" if counts.get("Thoughtcast", 0) >= 2 else "Grixis Affinity"
+    return _AFFINITY_COLOR_NAMES.get(key, f"{key} Affinity")
+
+
+def _resolve_affinity_family(counts: Counter[str], best_name: str, scores: list[tuple[str, int]]) -> str:
+    """Color-split Affinity when the signature already won (do not steal Broodscale etc.)."""
+    if not _is_affinity_name(best_name):
+        return best_name
+    if _is_affinity_core(counts):
+        return _affinity_variant_name(counts)
+    # Weak Bargain/Familiar hits without artifact-land core → demote
+    for name, score in scores:
+        if not _is_affinity_name(name) and score >= 8:
+            return name
+    return "Unknown"
+
+
 def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     counts = Counter(main)
     scores: list[tuple[str, int]] = []
@@ -643,6 +869,10 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
                 default=0,
             )
             return Classification(archetype=name, score=max(fairy_score, 8), runners_up=scores[:3])
+        if _is_affinity_core(counts):
+            name = _affinity_variant_name(counts)
+            aff_score = next((s for n, s in scores if _is_affinity_name(n)), 0)
+            return Classification(archetype=name, score=max(aff_score, 8), runners_up=scores[:3])
         return Classification(archetype="Unknown", score=scores[0][1] if scores else 0, runners_up=scores[:3])
     best_name, best_score = scores[0]
     # Promote Sprite packages that scored as Control/Terror into Faeries family
@@ -655,6 +885,8 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     best_name = _resolve_hawk_family(counts, best_name, scores)
     best_name = _resolve_ruby_storm(counts, best_name, scores)
     best_name = _resolve_faeries_family(counts, best_name, scores)
+    # After Faeries demotion may land on Affinity signature — apply color name / core gate.
+    best_name = _resolve_affinity_family(counts, best_name, scores)
     return Classification(archetype=best_name, score=best_score, runners_up=scores[1:4])
 
 
