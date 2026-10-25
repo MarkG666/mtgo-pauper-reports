@@ -107,6 +107,15 @@ def cmd_run_daily(args: argparse.Namespace) -> int:
     if catchup and catchup.failed:
         failed.extend(catchup.failed)
     if failed:
+        # Report + catch-up already ran. Lookback HTML flakes on old events must
+        # not prevent Actions from committing DB/reports or posting Discord
+        # (workflow also continues on failure; keep exit 2 as a visible signal).
+        logging.error(
+            "run-daily finished with %s ingest/catch-up failure(s) after writing report",
+            len(failed),
+        )
+        for item in failed[:10]:
+            logging.error("  failure detail: %s", item)
         return 2
     return 0
 
