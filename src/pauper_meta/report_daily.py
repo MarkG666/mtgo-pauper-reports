@@ -210,27 +210,27 @@ def _player_arch_map(conn: sqlite3.Connection, event_id: str) -> dict[str, str]:
 
 
 def _top32_deck_rows(conn: sqlite3.Connection, event_id: str) -> list[sqlite3.Row]:
+    """Top32 meta cohort for one event.
+
+    Use ``COALESCE(finish_rank, swiss_rank) <= 32``. An early ``finish_rank IS NOT
+    NULL AND finish_rank <= 32`` query wrongly stopped at Top8 whenever only SE
+    places 1–8 were filled (9–32 still NULL) — the swiss fallback never ran.
+    """
     rows = conn.execute(
         """
         SELECT * FROM decks
         WHERE event_id = ?
-          AND finish_rank IS NOT NULL
-          AND finish_rank <= 32
+          AND COALESCE(finish_rank, swiss_rank) IS NOT NULL
+          AND COALESCE(finish_rank, swiss_rank) <= 32
+        ORDER BY COALESCE(finish_rank, swiss_rank) ASC, player
         """,
         (event_id,),
     ).fetchall()
     if not rows:
         rows = conn.execute(
-            """
-            SELECT * FROM decks
-            WHERE event_id = ?
-              AND swiss_rank IS NOT NULL
-              AND swiss_rank <= 32
-            """,
+            "SELECT * FROM decks WHERE event_id = ? ORDER BY player",
             (event_id,),
         ).fetchall()
-    if not rows:
-        rows = conn.execute("SELECT * FROM decks WHERE event_id = ?", (event_id,)).fetchall()
     return list(rows)
 
 
@@ -687,25 +687,104 @@ def _trend(current: Counter[str], previous: Counter[str]) -> list[TrendDelta]:
 def _top32_strength_window(
     conn: sqlite3.Connection, start: date, end: date
 ) -> list[ArchCount]:
-    """Aggregate Top32-per-event decks across events with start_time date in [start, end]."""
+    """Aggregate Top32-per-event decks across events with **JST** start date in [start, end].
+
+    DB ``start_time`` is UTC text; pad ±1 UTC day then filter via ``_parse_event_date``.
+    """
+    prev = (start - timedelta(days=1)).isoformat()
+    nxt = (end + timedelta(days=1)).isoformat()
     rows = conn.execute(
         """
-        SELECT id FROM events
+        SELECT id, start_time FROM events
         WHERE substr(start_time, 1, 10) BETWEEN ? AND ?
         ORDER BY start_time
         """,
-        (start.isoformat(), end.isoformat()),
+        (prev, nxt),
     ).fetchall()
-    if not rows:
+    event_ids = [
+        r["id"]
+        for r in rows
+        if (d := _parse_event_date(r["start_time"])) is not None and start <= d <= end
+    ]
+    if not event_ids:
         return []
     parts = [
-        _arch_strength_from_decks(conn, _top32_deck_rows(conn, r["id"])) for r in rows
+        _arch_strength_from_decks(conn, _top32_deck_rows(conn, eid)) for eid in event_ids
     ]
     return _merge_arch_counts(parts)
 
 
 def _arch_counts_counter(rows: list[ArchCount]) -> Counter[str]:
     return Counter({a.archetype: a.count for a in rows})
+
+
+def meta_top32_checksum(
+    events: list[EventSummary],
+    meta: list[ArchCount],
+) -> list[str]:
+    """Lightweight 検算 notes: Top8 column vs brackets; Top32 size vs field.
+
+    Returns note strings (warnings prefixed with ``検算警告``). Safe to append
+    to report ``## 注記``; also useful for tests / CI logging.
+    """
+    notes: list[str] = []
+    bracket_n = sum(len(ev.top8_bracket) for ev in events)
+    top8_col = sum(a.top8_count for a in meta)
+    meta_total = sum(a.count for a in meta)
+
+    if bracket_n != top8_col:
+        notes.append(
+            f"検算警告: メタ Top8 列の合計 ({top8_col}) が "
+            f"Top8 ブラケット掲載数 ({bracket_n}) と一致しません。"
+        )
+    else:
+        notes.append(
+            f"検算: メタ Top8 列合計 = ブラケット掲載 {bracket_n} 件（一致）。"
+        )
+
+    # Per-event: cohort size should be ≤ published decks and ≤ 32
+    for ev in events:
+        cohort = sum(a.count for a in ev.top32)
+        if cohort > ev.deck_count:
+            notes.append(
+                f"検算警告: event {ev.event_id} Top32 合算 {cohort} > "
+                f"公開デッキ {ev.deck_count}。"
+            )
+        if cohort > 32:
+            notes.append(
+                f"検算警告: event {ev.event_id} Top32 合算 {cohort} > 32。"
+            )
+        # Challenge with full publish: expect min(32, deck_count) when ranks exist
+        if ev.deck_count >= 16 and cohort == 8 and ev.top8_bracket:
+            notes.append(
+                f"検算警告: event {ev.event_id} は公開デッキ {ev.deck_count} だが "
+                f"メタ cohort が 8（Top8 のみカウントの疑い）。"
+            )
+
+    field_cap = sum(min(32, ev.deck_count) for ev in events) if events else 0
+    if events and meta_total > field_cap:
+        notes.append(
+            f"検算警告: メタ Top32 合計 {meta_total} が "
+            f"当日フィールド上限 {field_cap}（各イベント min(32, 公開デッキ) 合算）を超えています。"
+        )
+    elif events:
+        notes.append(
+            f"検算: メタ Top32 合計 {meta_total} "
+            f"（上限 {field_cap} = 各イベント min(32, 公開デッキ) 合算）。"
+        )
+    return notes
+
+
+def log_meta_checksum(notes: list[str], *, logger: Any | None = None) -> None:
+    """Emit checksum notes to the given logger (default: module-style print via logging)."""
+    import logging
+
+    log = logger or logging.getLogger(__name__)
+    for n in notes:
+        if n.startswith("検算警告"):
+            log.warning("%s", n)
+        else:
+            log.info("%s", n)
 
 
 def _load_deck_payloads(conn: sqlite3.Connection, event_ids: list[str]) -> list[dict]:
@@ -808,6 +887,9 @@ def build_report_data(
 
     event_ids = [e.event_id for e in event_summaries]
     meta = _merge_arch_counts([e.top32 for e in event_summaries])
+    checksum_notes = meta_top32_checksum(event_summaries, meta)
+    log_meta_checksum(checksum_notes)
+    notes.extend(checksum_notes)
 
     # Window end = report event date when present, else report date (JST calendar)
     as_of = rd

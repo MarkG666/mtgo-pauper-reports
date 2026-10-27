@@ -123,8 +123,8 @@ def _eliminator_player(eliminated_by: str) -> str | None:
 def _fmt_top8_line(row: Top8Entry, *, include_deck_link: bool = True) -> str:
     """例: `準優勝: seasonofmists — Grixis Affinity（yahakaraに敗北）`（優勝は括弧なし）.
 
-    When ``include_deck_link`` and ``row.deck_url`` are set, appends
-    `` <mtgo-per-deck-url>`` (no-embed Discord link).
+    When ``include_deck_link`` and ``row.deck_url`` are set, appends a short
+    Discord markdown link ``[リスト](mtgo-per-deck-url)`` (not the raw URL).
     """
     line = f"{row.place_label}: {row.player} — {row.archetype}"
     if row.finish_rank != 1:
@@ -132,7 +132,7 @@ def _fmt_top8_line(row: Top8Entry, *, include_deck_link: bool = True) -> str:
         if elim:
             line = f"{line}（{elim}に敗北）"
     if include_deck_link and row.deck_url:
-        line = f"{line} <{row.deck_url}>"
+        line = f"{line} [リスト]({row.deck_url})"
     return f"- {line}"
 
 
@@ -147,8 +147,8 @@ def _build_daily_summary_body(
     """Assemble daily summary text.
 
     ``top8_links``:
-      - ``per-deck``: each Top8 line gets its MTGO ``#deck_<player>`` URL
-      - ``event``: one event decklist URL under the Top8 header (fallback)
+      - ``per-deck``: each Top8 line gets ``[リスト](#deck_…)`` markdown
+      - ``event``: one ``リストページ: <event-url>`` under each Top8 header
       - ``none``: no Top8 deck URLs
     """
     lines: list[str] = [
@@ -165,13 +165,13 @@ def _build_daily_summary_body(
             lines.append(f"- {ev.name} (`{ev.event_type}`) — {pc}")
         lines.append("")
 
-        # Top8: first event with bracket, else first event
-        bracket_ev = next((e for e in data.events if e.top8_bracket), data.events[0])
-        if bracket_ev.top8_bracket:
+        # All events with a Top8 bracket (meta Top8 column sums every event)
+        bracket_events = [e for e in data.events if e.top8_bracket]
+        include_per_deck = top8_links == "per-deck"
+        for bracket_ev in bracket_events:
             lines.append(f"**Top8** — {bracket_ev.name}")
             if top8_links == "event" and bracket_ev.source_url:
-                lines.append(f"デッキ一覧: <{bracket_ev.source_url}>")
-            include_per_deck = top8_links == "per-deck"
+                lines.append(f"リストページ: <{bracket_ev.source_url}>")
             for row in bracket_ev.top8_bracket:
                 lines.append(_fmt_top8_line(row, include_deck_link=include_per_deck))
             lines.append("")
@@ -206,10 +206,11 @@ def build_daily_summary(
 ) -> str:
     """Build Discord daily text under ``MAX_CHARS`` (Discord hard limit 2000).
 
-    Preference: per-deck Top8 MTGO links. If that exceeds the budget, drop
-    distinctive URLs first (names remain; full report keeps Goldfish), then
-    shrink meta rows, then fall back to a single MTGO event decklist URL for
-    Top8. Hard truncate only as last resort.
+    Preference: short per-deck ``[リスト](url)`` links. If that exceeds the
+    budget, drop distinctive URLs first (names remain; full report keeps
+    Goldfish), then shrink meta rows, then fall back to one
+    ``リストページ: <event-url>`` line per Top8 block (omit per-deck URLs).
+    Hard truncate only as last resort.
     """
     url = report_url or report_github_url(data.report_date)
     attempts: list[dict[str, Any]] = [
@@ -218,6 +219,7 @@ def build_daily_summary(
         {"top8_links": "per-deck", "distinctive_links": False, "meta_top_n": 5},
         {"top8_links": "event", "distinctive_links": True, "meta_top_n": META_TOP_N},
         {"top8_links": "event", "distinctive_links": False, "meta_top_n": 5},
+        {"top8_links": "none", "distinctive_links": False, "meta_top_n": 5},
     ]
     text = ""
     for opts in attempts:
