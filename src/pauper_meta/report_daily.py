@@ -950,9 +950,11 @@ def build_report_data(
         "（W/U/B/R/G、複数色は WUBRG 順、無色は C）を表示。"
     )
     notes.append(
-        "Top8 のプレイヤー／アーキタイプは **mtgo.com の個別デッキアンカー**"
+        "Top8 の**アーキタイプ名のみ**を **mtgo.com の個別デッキアンカー**"
         "（`#deck_<player>`、空白は `_`）へリンク。"
+        "プレイヤー名はプレーンテキスト（リンクなし）。"
         "特徴リストのリンク方針（MTGGoldfish 優先）は変更なし。"
+        "Discord 日次は短い `[リスト](同URL)` を優先。"
     )
 
     distinctive = select_distinctive(
@@ -1017,6 +1019,14 @@ def _render_diff_table(flag: DistinctiveFlag) -> list[str]:
     else:
         lines.extend(_render_one_diff_table(flag.side_diffs, "サイド"))
     return lines
+
+
+def _fmt_top8_md_cells(entry: Top8Entry) -> tuple[str, str]:
+    """GitHub daily Top8 table cells: plain player; archetype → `#deck_` URL only."""
+    player_cell = entry.player
+    if entry.deck_url:
+        return player_cell, f"[{entry.archetype}]({entry.deck_url})"
+    return player_cell, entry.archetype
 
 
 def _render_meta_table(rows: list[ArchCount]) -> list[str]:
@@ -1089,12 +1099,7 @@ def render_markdown(data: DailyReportData) -> str:
         lines.append("| 結果 | プレイヤー | アーキタイプ | 敗因 |")
         lines.append("|---|---|---|---|")
         for e in ev.top8_bracket:
-            if e.deck_url:
-                player_cell = f"[{e.player}]({e.deck_url})"
-                arch_cell = f"[{e.archetype}]({e.deck_url})"
-            else:
-                player_cell = e.player
-                arch_cell = e.archetype
+            player_cell, arch_cell = _fmt_top8_md_cells(e)
             lines.append(
                 f"| {e.place_label} | {player_cell} | {arch_cell} | {e.eliminated_by} |"
             )

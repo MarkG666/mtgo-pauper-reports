@@ -149,5 +149,33 @@ class DiscordTop8LinkTests(unittest.TestCase):
         self.assertNotIn("<https://", line)
 
 
+class GithubTop8LinkTests(unittest.TestCase):
+    def test_archetype_only_deck_link(self) -> None:
+        from pauper_meta.report_daily import _fmt_top8_md_cells
+
+        row = Top8Entry(
+            "優勝",
+            1,
+            "Alice",
+            "Bogles",
+            deck_url="https://www.mtgo.com/decklist/pauper-x/#deck_Alice",
+        )
+        player_cell, arch_cell = _fmt_top8_md_cells(row)
+        self.assertEqual(player_cell, "Alice")
+        self.assertEqual(
+            arch_cell,
+            "[Bogles](https://www.mtgo.com/decklist/pauper-x/#deck_Alice)",
+        )
+        self.assertNotIn("[Alice]", player_cell)
+
+    def test_no_url_leaves_plain_text(self) -> None:
+        from pauper_meta.report_daily import _fmt_top8_md_cells
+
+        row = Top8Entry("Top8", 8, "Bob", "Elves")
+        player_cell, arch_cell = _fmt_top8_md_cells(row)
+        self.assertEqual(player_cell, "Bob")
+        self.assertEqual(arch_cell, "Elves")
+
+
 if __name__ == "__main__":
     unittest.main()
