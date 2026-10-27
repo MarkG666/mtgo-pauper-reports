@@ -147,28 +147,17 @@ def recompute_top8_dist_for_event(conn: sqlite3.Connection, event_id: str) -> No
     """
     ev = conn.execute("SELECT start_time FROM events WHERE id = ?", (event_id,)).fetchone()
     event_date = _event_date(ev["start_time"] if ev else None)
+    # COALESCE: partial finish_rank (Top8 only) must not truncate the cohort.
     rows = conn.execute(
         """
         SELECT *
         FROM decks
         WHERE event_id = ?
-          AND finish_rank IS NOT NULL
-          AND finish_rank <= 32
+          AND COALESCE(finish_rank, swiss_rank) IS NOT NULL
+          AND COALESCE(finish_rank, swiss_rank) <= 32
         """,
         (event_id,),
     ).fetchall()
-    # Fallback: swiss_rank Top32, then all published decks for the event
-    if not rows:
-        rows = conn.execute(
-            """
-            SELECT *
-            FROM decks
-            WHERE event_id = ?
-              AND swiss_rank IS NOT NULL
-              AND swiss_rank <= 32
-            """,
-            (event_id,),
-        ).fetchall()
     if not rows:
         rows = conn.execute("SELECT * FROM decks WHERE event_id = ?", (event_id,)).fetchall()
     counts: Counter[str] = Counter()
