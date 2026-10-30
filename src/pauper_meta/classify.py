@@ -73,6 +73,8 @@ SIGNATURES: list[tuple[str, list[tuple[str, int]]]] = [
             ("Counterspell", 2),
         ],
     ),
+    # Madness family base score (color via _resolve_madness_family).
+    # Loot + Temper/Imp/Kiss core; Mono-Red ≠ Rakdos ≠ Boros (black/white splash).
     (
         "Mono-Red Madness",
         [
@@ -340,7 +342,28 @@ SIGNATURES: list[tuple[str, list[tuple[str, int]]]] = [
     ),
 ]
 
-# Non-land splash signals for Hawk color naming (Sneaky Snacker intentionally omitted).
+# Cards that never contribute to color-in-name classification (global).
+# Sneaky Snacker is UB but is a loot payoff, not a splash. Vandalblast is often
+# a one-of red hate piece that must not rename Mono-Blue / Dimir shells.
+_COLOR_NAMING_EXCLUSIONS = frozenset(
+    {
+        "Sneaky Snacker",
+        "Vandalblast",
+    }
+)
+
+
+def _has_splash(counts: Counter[str], splash: frozenset[str]) -> bool:
+    """True if any splash-signal card is present (excluding global naming exceptions)."""
+    return any(
+        counts.get(card, 0) > 0
+        for card in splash
+        if card not in _COLOR_NAMING_EXCLUSIONS
+    )
+
+
+# Non-land splash signals for Hawk color naming.
+# Makeshift Munitions is red (not a black splash) — do not put it here.
 _HAWK_BLACK_SPLASH = frozenset(
     {
         "Refurbished Familiar",
@@ -360,7 +383,6 @@ _HAWK_BLACK_SPLASH = frozenset(
         "Deadly Dispute",
         "Snuff Out",
         "Duress",
-        "Makeshift Munitions",
         "Mardu Devotee",
         "Omen of the Dead",
         "Reckoner's Bargain",
@@ -398,8 +420,8 @@ _HAWK_FAMILY = frozenset(
     {"Boros Hawk", "Mardu Hawk", "Jeskai Hawk", "4c Hawk", "Naya Hawk", "5c Hawk"}
 )
 
-# Faeries color naming (mainboard). Sneaky Snacker alone does not add red
-# (same idea as Hawk; MTGO sometimes tags Snacker oddly).
+# Faeries color naming (mainboard). Snacker / Vandalblast excluded via
+# _COLOR_NAMING_EXCLUSIONS (and Vandalblast omitted from the red set below).
 _FAERIES_BLACK_SPLASH = frozenset(
     {
         "Snuff Out",
@@ -444,7 +466,6 @@ _FAERIES_RED_SPLASH = frozenset(
         "Oliphaunt",
         "Abandon Attachments",
         "Breath Weapon",
-        "Vandalblast",
         "Pyroblast",
         "Red Elemental Blast",
         "Fiery Cannonade",
@@ -619,6 +640,102 @@ def _is_affinity_name(name: str) -> bool:
     return name in _AFFINITY_FAMILY or name.endswith(" Affinity")
 
 
+# Madness color naming (mainboard). Sneaky Snacker alone does not add U/B
+# (same as Hawk / Faeries / Affinity). Hybrid loot cantrips (Twinned Vision /
+# Inside Out) do not add blue — they appear in Mono-Red and Boros shells.
+_MADNESS_BLACK_SPLASH = frozenset(
+    {
+        "Alms of the Vein",
+        "Kitchen Imp",
+        "Vampire's Kiss",
+        "Wekhdu, Midnight Hunter",
+        "Black Mage's Rod",
+        "Raven of Fell Omens",
+        "Stinkweed Imp",
+        "Lotleth Giant",
+        "First-Sphere Gargantua",
+        "Dread Return",
+        "Dark Withering",
+        "Cast Down",
+        "Refurbished Familiar",
+        "Duress",
+        "Vampire Hounds",
+        "Unearth",
+        "Sovereign's Bite",
+        "Snuff Out",
+        "Slitherhead",
+        "Putrid Goblin",
+        "Mukotai Ambusher",
+        "Gurmag Angler",
+        "Eviscerator's Insight",
+        "Entropic Eidolon",
+        "Dihada's Ploy",
+        "Bone Shards",
+        "Thorn of the Black Rose",
+        "Extract a Confession",
+        "Troll of Khazad-dum",
+        "Troll of Khazad-dûm",
+        "Crypt Rats",
+        "Okiba-Gang Shinobi",
+        "Nihil Spellbomb",
+        "Bump in the Night",
+    }
+)
+_MADNESS_WHITE_SPLASH = frozenset(
+    {
+        "Thrilling Discovery",
+        "Pursue the Past",
+        "Aurora Eidolon",
+        "Tireless Tribe",
+        "Spirit Mascot",
+        "Prismatic Strands",
+        "Loran's Escape",
+        "Blacksmith's Skill",
+        "Thraben Charm",
+        "Thraben Inspector",
+        "Rally the Peasants",
+        "Novice Inspector",
+        "Lunarch Veteran",
+        "Battle Screech",
+        "Sentinel's Eyes",
+        "Gods Willing",
+        "Shelter",
+    }
+)
+_MADNESS_GREEN_SPLASH = frozenset(
+    {
+        "Whiteout",
+        "Greater Mossdog",
+        "Basking Rootwalla",
+        "Manamorphose",
+        "Snakeskin Veil",
+        "Weather the Storm",
+    }
+)
+# WUBRG letter → Madness display name (missing key → "{letters} Madness").
+_MADNESS_COLOR_NAMES: dict[str, str] = {
+    "R": "Mono-Red Madness",
+    "BR": "Rakdos Madness",
+    "WR": "Boros Madness",
+    "WBR": "Mardu Madness",
+    "RG": "Gruul Madness",
+    "BRG": "Jund Madness",
+    "WRG": "Naya Madness",
+    "WUBR": "4c Madness",
+    "UBRG": "4c Madness",
+    "WUBRG": "5c Madness",
+    "UR": "Izzet Madness",
+    "UBR": "Grixis Madness",
+}
+_MADNESS_FAMILY = frozenset(_MADNESS_COLOR_NAMES.values()) | {
+    "Madness",
+}
+
+
+def _is_madness_name(name: str) -> bool:
+    return name in _MADNESS_FAMILY or name.endswith(" Madness")
+
+
 @dataclass
 class Classification:
     archetype: str
@@ -670,11 +787,12 @@ def _is_hawk_core(counts: Counter[str]) -> bool:
 def _hawk_variant_name(counts: Counter[str]) -> str:
     """Boros base; black → Mardu; blue → Jeskai; both → 4c; green → Naya/5c.
 
-    Sneaky Snacker alone does not add a color for naming.
+    Sneaky Snacker / Vandalblast alone do not add a color for naming.
+    Makeshift Munitions (red) is not a black splash signal.
     """
-    has_b = any(counts.get(c, 0) > 0 for c in _HAWK_BLACK_SPLASH)
-    has_u = any(counts.get(c, 0) > 0 for c in _HAWK_BLUE_SPLASH)
-    has_g = any(counts.get(c, 0) > 0 for c in _HAWK_GREEN_SPLASH)
+    has_b = _has_splash(counts, _HAWK_BLACK_SPLASH)
+    has_u = _has_splash(counts, _HAWK_BLUE_SPLASH)
+    has_g = _has_splash(counts, _HAWK_GREEN_SPLASH)
     if has_b and has_u and has_g:
         return "5c Hawk"
     if has_b and has_u:
@@ -745,8 +863,8 @@ def _faeries_variant_name(counts: Counter[str]) -> str:
     - both → Grixis Faeries
     - neither → Mono-Blue Faeries
     """
-    has_b = any(counts.get(c, 0) > 0 for c in _FAERIES_BLACK_SPLASH)
-    has_r = any(counts.get(c, 0) > 0 for c in _FAERIES_RED_SPLASH)
+    has_b = _has_splash(counts, _FAERIES_BLACK_SPLASH)
+    has_r = _has_splash(counts, _FAERIES_RED_SPLASH)
     if has_b and has_r:
         return "Grixis Faeries"
     if has_b:
@@ -796,14 +914,14 @@ def _is_affinity_core(counts: Counter[str]) -> bool:
 def _affinity_variant_name(counts: Counter[str]) -> str:
     """Split Affinity by splash identity cards (not by shared Enforcer/Familiar core).
 
-    Sneaky Snacker alone does not add a color (same as Hawk / Faeries).
+    Sneaky Snacker / Vandalblast alone do not add a color (same as Hawk / Faeries).
     Writhing Chrysalis counts as green even when MTGO omits card colors.
     """
-    has_w = any(counts.get(c, 0) > 0 for c in _AFFINITY_WHITE_SPLASH)
-    has_u = any(counts.get(c, 0) > 0 for c in _AFFINITY_BLUE_SPLASH)
-    has_b = any(counts.get(c, 0) > 0 for c in _AFFINITY_BLACK_SPLASH)
-    has_r = any(counts.get(c, 0) > 0 for c in _AFFINITY_RED_SPLASH)
-    has_g = any(counts.get(c, 0) > 0 for c in _AFFINITY_GREEN_SPLASH)
+    has_w = _has_splash(counts, _AFFINITY_WHITE_SPLASH)
+    has_u = _has_splash(counts, _AFFINITY_BLUE_SPLASH)
+    has_b = _has_splash(counts, _AFFINITY_BLACK_SPLASH)
+    has_r = _has_splash(counts, _AFFINITY_RED_SPLASH)
+    has_g = _has_splash(counts, _AFFINITY_GREEN_SPLASH)
     key = "".join(
         letter
         for letter, present in (
@@ -829,6 +947,67 @@ def _resolve_affinity_family(counts: Counter[str], best_name: str, scores: list[
     # Weak Bargain/Familiar hits without artifact-land core → demote
     for name, score in scores:
         if not _is_affinity_name(name) and score >= 8:
+            return name
+    return "Unknown"
+
+
+def _is_madness_core(counts: Counter[str]) -> bool:
+    """Loot package with Madness payoffs (Temper / Imp / Kiss / Tribe / Epicure)."""
+    loot = (
+        counts.get("Grab the Prize", 0)
+        + counts.get("Highway Robbery", 0)
+        + counts.get("Faithless Looting", 0)
+    )
+    temper = counts.get("Fiery Temper", 0)
+    rakdos = (
+        counts.get("Kitchen Imp", 0)
+        + counts.get("Vampire's Kiss", 0)
+        + counts.get("Alms of the Vein", 0)
+    )
+    tribe = counts.get("Tireless Tribe", 0)
+    discovery = counts.get("Thrilling Discovery", 0) + counts.get("Pursue the Past", 0)
+    epicure_snacker = counts.get("Voldaren Epicure", 0) + counts.get("Sneaky Snacker", 0)
+    # Boros Tribe shell often runs Faithless-only loot (no Grab/Highway).
+    if tribe >= 2 and (discovery + counts.get("Faithless Looting", 0)) >= 4:
+        return True
+    if loot >= 3 and (temper + rakdos + epicure_snacker + tribe) >= 4:
+        return True
+    if loot >= 4 and (temper + rakdos + epicure_snacker) >= 2:
+        return True
+    return False
+
+
+def _madness_variant_name(counts: Counter[str]) -> str:
+    """Split Madness by splash identity cards (not by shared loot/Temper core).
+
+    Sneaky Snacker / Vandalblast alone do not add a color. Twinned Vision /
+    Inside Out do not add blue (loot filters used in Mono-Red and Boros shells).
+    """
+    has_b = _has_splash(counts, _MADNESS_BLACK_SPLASH)
+    has_w = _has_splash(counts, _MADNESS_WHITE_SPLASH)
+    has_g = _has_splash(counts, _MADNESS_GREEN_SPLASH)
+    # Red is assumed from Madness core / signature.
+    key = "".join(
+        letter
+        for letter, present in (
+            ("W", has_w),
+            ("B", has_b),
+            ("R", True),
+            ("G", has_g),
+        )
+        if present
+    )
+    return _MADNESS_COLOR_NAMES.get(key, f"{key} Madness")
+
+
+def _resolve_madness_family(counts: Counter[str], best_name: str, scores: list[tuple[str, int]]) -> str:
+    """Color-split Madness when the signature already won (do not steal Burn etc.)."""
+    if not _is_madness_name(best_name):
+        return best_name
+    if _is_madness_core(counts):
+        return _madness_variant_name(counts)
+    for name, score in scores:
+        if not _is_madness_name(name) and score >= 8:
             return name
     return "Unknown"
 
@@ -873,6 +1052,10 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
             name = _affinity_variant_name(counts)
             aff_score = next((s for n, s in scores if _is_affinity_name(n)), 0)
             return Classification(archetype=name, score=max(aff_score, 8), runners_up=scores[:3])
+        if _is_madness_core(counts):
+            name = _madness_variant_name(counts)
+            mad_score = next((s for n, s in scores if _is_madness_name(n)), 0)
+            return Classification(archetype=name, score=max(mad_score, 8), runners_up=scores[:3])
         return Classification(archetype="Unknown", score=scores[0][1] if scores else 0, runners_up=scores[:3])
     best_name, best_score = scores[0]
     # Promote Sprite packages that scored as Control/Terror into Faeries family
@@ -887,6 +1070,7 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     best_name = _resolve_faeries_family(counts, best_name, scores)
     # After Faeries demotion may land on Affinity signature — apply color name / core gate.
     best_name = _resolve_affinity_family(counts, best_name, scores)
+    best_name = _resolve_madness_family(counts, best_name, scores)
     return Classification(archetype=best_name, score=best_score, runners_up=scores[1:4])
 
 
