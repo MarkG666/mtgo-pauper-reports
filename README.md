@@ -5,6 +5,7 @@ Magic Online の **Pauper Challenge** と **Preliminary** を毎日取得し、�
 
 - リポジトリ: https://github.com/MarkG666/mtgo-pauper-reports  
 - Actions: https://github.com/MarkG666/mtgo-pauper-reports/actions  
+- **公開サイト（GitHub Pages）:** https://markg666.github.io/mtgo-pauper-reports/（`docs/` を main から公開。初回は Settings → Pages で有効化）  
 - **はじめての人向け手順:** [SETUP.md](./SETUP.md)（Webhook → Secret → 手動実行）
 
 ---
@@ -19,7 +20,9 @@ Magic Online の **Pauper Challenge** と **Preliminary** を毎日取得し、�
 
 Cron は UTC **00:00** と **01:00** の両方に置く（Actions の ~4.5–5h 遅延を見込んだ前倒し）。`America/New_York` の夏時間判定で正しい枠だけ実行します。
 
-Discord には **大会ごとに1投稿**の短い要約を送ります。表つきの全文は GitHub の `reports/daily/YYYY-MM-DD.md`（MTGO 開催日）を開いてください。同じ開催日に稀に複数大会があるときだけ `-1` / `-2`。
+Discord には **大会ごとに1投稿**の短い要約を送ります。表つきの全文は GitHub の `reports/daily/YYYY-MM-DD.md`（MTGO 開催日）か、GitHub Pages の一覧（上記 URL）から読んでください。同じ開催日に稀に複数大会があるときだけ `-1` / `-2`。
+
+`reports/daily/` が更新されると Actions（`Sync Pages daily docs`）が `docs/daily/` を同期します。手動なら `python scripts/sync_pages_daily.py`。
 
 ---
 
@@ -85,5 +88,5 @@ Windows 向けに `run-daily.bat` もあります（タスク スケジューラ
 
 - Webhook URL や Secret をコード・README・チャットに書かない  
 - mtgo.com / MTGGoldfish へは低頻度・キャッシュ優先  
-- リポジトリはプライベート想定（全文リンクは権限のある人だけ）  
+- リポジトリは公開想定。日次レポートは GitHub Pages でも閲覧可能  
 - Discord 投稿は環境変数 `DISCORD_WEBHOOK_URL`（Actions では Secret）を参照します

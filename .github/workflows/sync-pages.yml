@@ -1,0 +1,48 @@
+# Keep docs/daily (GitHub Pages) in sync with reports/daily after main updates.
+# Source of truth: reports/daily/*.md — do not edit docs/daily by hand.
+name: Sync Pages daily docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "reports/daily/**"
+      - "reports/meta/**"
+      - "scripts/sync_pages_daily.py"
+      - ".github/workflows/sync-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-pages-docs
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync docs from reports
+        run: python scripts/sync_pages_daily.py
+
+      - name: Commit and push docs if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/daily docs/meta docs/index.md
+          if git diff --staged --quiet; then
+            echo "docs already in sync"
+          else
+            git commit -m "chore: sync GitHub Pages docs from reports/daily"
+            git push
+            echo "pushed docs sync"
+          fi
