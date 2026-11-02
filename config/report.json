@@ -1,4 +1,5 @@
 {
   "other_share_threshold": 0.02,
-  "comment": "累積分布（1ヵ月／1週間）でシェアがこの値以下のアーキは Other に合算。≥3% は個別行（2%超は個別）。メタ概要の日次表には適用しない。"
+  "delta_sparse_deck_threshold": 64,
+  "comment": "累積分布（1ヵ月／1週間）でシェアがこの値以下のアーキは Other に合算。≥3% は個別行（2%超は個別）。メタ概要の日次表には適用しない。delta_sparse_deck_threshold は前窓 Top32 合算がこれ未満のとき差のノイズ注意を出す。"
 }
