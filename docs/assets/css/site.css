@@ -90,6 +90,7 @@ main table {
   margin: 0.85rem 0 1.25rem;
   font-size: 0.92rem;
   background: var(--card);
+  table-layout: auto;
 }
 
 main th,
@@ -106,6 +107,11 @@ main th {
 
 main tr:nth-child(even) td {
   background: #faf7f2;
+}
+
+/* Keep empty +/- cells from collapsing awkwardly in distinctive tables */
+main td:empty::before {
+  content: "\00a0";
 }
 
 .site-footer {
@@ -125,9 +131,21 @@ main tr:nth-child(even) td {
     font-size: 16px;
   }
 
-  main table {
-    display: block;
+  /* Keep real table layout; scroll the page column instead of
+     ``display: block`` on <table> (that stacks rows/cells oddly). */
+  main.wrap {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+  }
+
+  main table {
+    font-size: 0.85rem;
+    width: max-content;
+    min-width: 100%;
+  }
+
+  main th,
+  main td {
+    white-space: nowrap;
   }
 }

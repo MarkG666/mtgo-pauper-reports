@@ -11,6 +11,7 @@ from pauper_meta.report_daily import (
     ArchCount,
     DailyReportData,
     EventSummary,
+    Top8Entry,
     _fmt_pct_delta,
     _with_period_deltas,
     render_markdown,
@@ -122,9 +123,12 @@ class RenderMarkdownTests(unittest.TestCase):
                     source_url="https://www.mtgo.com/decklist/pauper-challenge-32-2026-11-0112857406/",
                     deck_count=32,
                     goldfish_url="https://www.mtggoldfish.com/tournament/pauper-challenge-32-2026-11-01",
+                    top8_bracket=[
+                        Top8Entry("優勝", 1, "P1", "A", "—", "https://example.test/#deck_P1"),
+                    ],
                 )
             ],
-            meta_overview=[],
+            meta_overview=[ArchCount("A", 4, 0.5, 8, 4, 0.67, 1)],
             month_dist=[
                 ArchCount("A", 10, 0.5, 10, 10, 0.5, 1, share_delta=0.02, winrate_delta=-0.01)
             ],
@@ -160,6 +164,11 @@ class RenderMarkdownTests(unittest.TestCase):
         self.assertIn("reports/meta/report-notes.md", md)
         # Baseline then blank line then メイン
         self.assertIn("- 比較基準: 直近2週間の同アーキ 10本\n\n**メイン**", md)
+        # Jekyll kramdown GFM needs a blank line before pipe tables
+        self.assertIn("## Top8 ブラケット — Pauper Challenge 32\n\n| 結果 |", md)
+        self.assertIn("## メタ概要（Top32・この大会のみ）\n\n| アーキタイプ |", md)
+        self.assertIn("## 過去1ヵ月累積のアーキタイプ分布\n\n| アーキタイプ |", md)
+        self.assertIn("## 直近1週間累積のアーキタイプ分布\n\n| アーキタイプ |", md)
 
 
 if __name__ == "__main__":

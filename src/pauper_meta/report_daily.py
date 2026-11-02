@@ -1375,6 +1375,9 @@ def render_markdown(data: DailyReportData) -> str:
             lines.append("ブラケット／最終順位データなし。")
             lines.append("")
             continue
+        # Blank line required: Jekyll kramdown GFM will not parse tables that
+        # start immediately after a heading (they collapse into one <p>).
+        lines.append("")
         lines.append("| 結果 | プレイヤー | アーキタイプ | 敗因 |")
         lines.append("|---|---|---|---|")
         for e in ev.top8_bracket:
@@ -1388,6 +1391,7 @@ def render_markdown(data: DailyReportData) -> str:
     if not data.meta_overview:
         lines.append("データなし。")
     else:
+        lines.append("")
         lines.extend(_render_meta_table(data.meta_overview))
     lines.append("")
 
@@ -1395,6 +1399,7 @@ def render_markdown(data: DailyReportData) -> str:
     if not data.month_dist:
         lines.append("データなし。")
     else:
+        lines.append("")
         lines.extend(
             _render_cumul_table(
                 data.month_dist,
@@ -1411,6 +1416,7 @@ def render_markdown(data: DailyReportData) -> str:
     if not data.week_dist:
         lines.append("データなし。")
     else:
+        lines.append("")
         lines.extend(
             _render_cumul_table(
                 data.week_dist,

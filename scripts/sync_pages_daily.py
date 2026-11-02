@@ -37,6 +37,32 @@ def extract_title(text: str, fallback: str) -> str:
     return match.group(1).strip()
 
 
+def ensure_blank_line_before_tables(text: str) -> str:
+    """Insert a blank line before a GFM table that follows non-table content.
+
+    Jekyll (kramdown + GFM) does not recognize pipe tables that start on the
+    line immediately after a heading/paragraph; they render as one collapsed
+    ``<p>| ... || ... |</p>``. GitHub.com is more lenient, but a blank line is
+    valid GFM either way.
+    """
+    lines = text.splitlines()
+    out: list[str] = []
+    for line in lines:
+        if (
+            line.startswith("|")
+            and out
+            and out[-1].strip() != ""
+            and not out[-1].lstrip().startswith("|")
+        ):
+            out.append("")
+        out.append(line)
+    ended_with_newline = text.endswith("\n")
+    result = "\n".join(out)
+    if ended_with_newline:
+        result += "\n"
+    return result
+
+
 def sort_key(stem: str) -> tuple:
     """Reverse-chronological friendly key: date desc, then optional -N suffix."""
     m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})(?:-(\d+))?", stem)
@@ -52,6 +78,7 @@ def write_page(src: Path, dst: Path, *, layout: str = "default") -> str:
     body = MD_LINK_RE.sub(r"\1.html\2", raw)
     # Drop the leading H1; layout already shows page.title.
     body = re.sub(r"^#\s+.+\n+", "", body, count=1)
+    body = ensure_blank_line_before_tables(body)
     front = (
         "---\n"
         f"layout: {layout}\n"
