@@ -46,7 +46,7 @@ from pathlib import Path
 
 from .db import db_session, init_db
 from .discord_summary import unmark_discord_posted, was_discord_posted
-from .ingest import ingest_event_html, run_ingest
+from .ingest import ingest_event_html, retry_pending_ingests, run_ingest
 from .overrides import apply_all
 from .paths import DB_PATH, REPORTS_DIR, ensure_dirs
 from .report_daily import (
@@ -224,10 +224,13 @@ def run_yesterday_catchup(
     lookback: int = 16,
     db_path: Path | None = None,
     fetcher: MtgoFetcher | None = None,
+    lookback_days: int = 3,
 ) -> CatchupResult:
-    """If yesterday (JST) is incomplete or missing a report, re-ingest and regenerate.
+    """Re-ingest / regenerate recent incomplete JST days (default: yesterday + 2).
 
-    ``force=True`` always regenerates yesterday's report (still one lookback day).
+    Also force-retries ``data/ingest_pending.json`` entries (events that failed
+    decklist parse and never landed decks). ``force=True`` always regenerates
+    yesterday even when complete.
     """
     ensure_dirs()
     init_db(db_path)
@@ -235,28 +238,50 @@ def run_yesterday_catchup(
     yesterday = today - timedelta(days=1)
     result = CatchupResult(today=today, yesterday=yesterday, needed=False)
     fetcher = fetcher or MtgoFetcher()
+    days = max(1, int(lookback_days))
 
+    days_needed: list[tuple[date, list[str], list[IncompleteEvent]]] = []
     with db_session(db_path or DB_PATH) as conn:
-        needed, reasons, incomplete = day_catchup_needed(conn, yesterday)
-        if force and not needed:
-            needed = True
-            reasons = reasons + ["force"]
-        result.needed = needed
-        result.reasons = reasons
-        result.incomplete_events = incomplete
+        for i in range(1, days + 1):
+            day = today - timedelta(days=i)
+            needed, reasons, incomplete = day_catchup_needed(conn, day)
+            if force and day == yesterday and not needed:
+                needed = True
+                reasons = reasons + ["force"]
+            if needed and reasons != ["no_events_jst"] and reasons != ["already_discord_posted"]:
+                days_needed.append((day, reasons, incomplete))
+                result.incomplete_events.extend(incomplete)
 
-        if not needed:
-            logger.info(
-                "catch-up skip: yesterday=%s complete (report+events ok)",
-                yesterday.isoformat(),
-            )
-            return result
+    # Always attempt pending queue (may be empty).
+    pending_summary = retry_pending_ingests(db_path=db_path, fetcher=fetcher)
+    logger.info(
+        "catch-up pending retry candidates=%s ingested=%s failed=%s",
+        pending_summary["candidates"],
+        len(pending_summary["ingested"]),
+        len(pending_summary["failed"]),
+    )
+    for f in pending_summary["failed"]:
+        result.failed.append(f)
+    if pending_summary["ingested"]:
+        result.needed = True
+        result.reinested.extend(pending_summary["ingested"])
 
+    if not days_needed and pending_summary["candidates"] == 0:
         logger.info(
-            "catch-up start yesterday=%s reasons=%s",
+            "catch-up skip: yesterday=%s complete (report+events ok); pending empty",
             yesterday.isoformat(),
-            reasons,
         )
+        return result
+
+    if days_needed:
+        result.needed = True
+        result.reasons = [f"{d.isoformat()}:{','.join(r)}" for d, r, _ in days_needed]
+        logger.info("catch-up start days=%s", result.reasons)
+    else:
+        # Pending queue had entries (success and/or still failing).
+        result.needed = True
+        result.reasons = ["pending_retry"]
+        logger.info("catch-up start pending_retry only")
 
     # Fresh listing pass (may pick up events that appeared after yesterday's run)
     listing_summary = run_ingest(
@@ -274,18 +299,18 @@ def run_yesterday_catchup(
     for f in listing_summary["failed"]:
         result.failed.append(f)
 
-    # Force-refresh specifically incomplete events still in DB (close session first:
-    # ingest_event_html opens its own connection).
+    # Force-refresh incomplete events for each needed day.
     to_refresh: list[tuple[IncompleteEvent, dict]] = []
     with db_session(db_path or DB_PATH) as conn:
-        _, _, incomplete = day_catchup_needed(conn, yesterday)
-        result.incomplete_events = incomplete
-        for item in incomplete:
-            row = conn.execute(
-                "SELECT * FROM events WHERE id = ?", (item.event_id,)
-            ).fetchone()
-            if row:
-                to_refresh.append((item, dict(row)))
+        for day, _reasons, _inc in days_needed:
+            _, _, incomplete = day_catchup_needed(conn, day)
+            for item in incomplete:
+                row = conn.execute(
+                    "SELECT * FROM events WHERE id = ?", (item.event_id,)
+                ).fetchone()
+                if row and not any(t[0].event_id == item.event_id for t in to_refresh):
+                    to_refresh.append((item, dict(row)))
+        result.incomplete_events = [t[0] for t in to_refresh]
 
     for item, row in to_refresh:
         try:
@@ -296,19 +321,39 @@ def run_yesterday_catchup(
             logger.exception("catch-up failed %s: %s", item.event_id, exc)
             result.failed.append({"event_id": item.event_id, "error": str(exc)})
 
+    # Regenerate reports for every day we touched (needed days + pending successes).
+    regen_days = {d for d, _, _ in days_needed}
+    if pending_summary["ingested"] or result.reinested:
+        # Recompute which JST days those event ids belong to.
+        with db_session(db_path or DB_PATH) as conn:
+            for eid in set(result.reinested) | set(pending_summary["ingested"]):
+                row = conn.execute(
+                    "SELECT start_time FROM events WHERE id = ?", (eid,)
+                ).fetchone()
+                if not row:
+                    continue
+                from .report_daily import _parse_event_date
+
+                d = _parse_event_date(row["start_time"])
+                if d:
+                    regen_days.add(d)
+
+    if not regen_days:
+        return result
+
     with db_session(db_path or DB_PATH) as conn:
         apply_all(conn)
-        written = write_reports_for_day(conn, report_date=yesterday)
-        result.report_paths = [str(p) for p, _ in written]
+        for day in sorted(regen_days):
+            written = write_reports_for_day(conn, report_date=day)
+            paths = [str(p) for p, _ in written]
+            result.report_paths.extend(paths)
+            if unmark_discord_posted("daily", day):
+                logger.info(
+                    "catch-up unmarked discord_posted for %s so Discord can re-post",
+                    day.isoformat(),
+                )
+            logger.info("catch-up reports written for %s: %s", day.isoformat(), paths)
         result.report_path = result.report_paths[0] if result.report_paths else None
-        result.report_regenerated = True
-        logger.info("catch-up reports written: %s", result.report_paths)
-
-    # Allow Discord step to re-post updated content (new same-day event, ranks, …).
-    if unmark_discord_posted("daily", yesterday):
-        logger.info(
-            "catch-up unmarked discord_posted for %s (day + stems) so Discord can re-post",
-            yesterday.isoformat(),
-        )
+        result.report_regenerated = bool(result.report_paths)
 
     return result

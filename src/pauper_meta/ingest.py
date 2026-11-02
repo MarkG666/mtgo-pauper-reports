@@ -27,16 +27,62 @@ from .overrides import (
 from .parse_mtgo import extract_decklists_data, extract_listing_events, parse_event
 from .paths import DB_PATH, ensure_dirs
 from .players import rebuild_player_event_results
+from .ingest_pending import clear_pending, prune_stale, register_failure
 
 logger = logging.getLogger(__name__)
 
 # slug example: pauper-challenge-32-2026-10-1412856206 → event_id 12856206
 SLUG_EVENT_ID_RE = re.compile(r"(\d{8})$")
+# date in slug: pauper-challenge-16-2026-10-3112857391
+SLUG_DATE_RE = re.compile(r"(20\d{2}-\d{2}-\d{2})")
 
 
 def event_id_from_slug(slug: str) -> str | None:
     m = SLUG_EVENT_ID_RE.search(slug)
     return m.group(1) if m else None
+
+
+def slug_date_from_slug(slug: str) -> str | None:
+    m = SLUG_DATE_RE.search(slug)
+    return m.group(1) if m else None
+
+
+def upsert_event_stub(
+    *,
+    event_id: str,
+    source_url: str,
+    event_type: str | None,
+    slug: str,
+    db_path: Path | None = None,
+) -> None:
+    """Insert/update a zero-deck event shell so catch-up can see incomplete days.
+
+    ``start_time`` uses the slug calendar date at 12:00 UTC as a placeholder
+    until a full ingest overwrites it with the real MTGO start.
+    """
+    day = slug_date_from_slug(slug) or "1970-01-01"
+    name = slug.replace("-", " ").title()
+    with db_session(db_path or DB_PATH) as conn:
+        existing = conn.execute(
+            "SELECT COUNT(*) AS c FROM decks WHERE event_id = ?", (event_id,)
+        ).fetchone()["c"]
+        if int(existing) > 0:
+            # Already have decks — do not clobber with a stub.
+            return
+        upsert_event(
+            conn,
+            {
+                "id": event_id,
+                "name": name,
+                "start_time": f"{day} 12:00:00.0",
+                "channel": "mtgo",
+                "event_type": event_type or "challenge",
+                "player_count": None,
+                "source_url": source_url,
+                "raw_path": None,
+                "ingested_at": utc_now_iso(),
+            },
+        )
 
 
 def ingest_event_html(
@@ -50,6 +96,15 @@ def ingest_event_html(
     raw = extract_decklists_data(html)
     parsed = parse_event(raw, fallback_type=fallback_type, source_url=source_url)
     with db_session(db_path or DB_PATH) as conn:
+        existing_decks = conn.execute(
+            "SELECT COUNT(*) AS c FROM decks WHERE event_id = ?",
+            (parsed.event_id,),
+        ).fetchone()["c"]
+        if not parsed.decks and int(existing_decks) > 0:
+            raise ValueError(
+                f"refusing to overwrite event {parsed.event_id} "
+                f"({existing_decks} decks) with empty decklists parse"
+            )
         upsert_event(
             conn,
             {
@@ -151,6 +206,8 @@ def ingest_event_html(
             conn.execute("UPDATE decks SET archetype_final = ? WHERE id = ?", (final, row["id"]))
         recompute_top8_dist_for_event(conn, parsed.event_id)
         rebuild_player_event_results(conn, parsed.event_id)
+    if parsed.decks:
+        clear_pending(parsed.event_id)
     return parsed.event_id
 
 
@@ -210,6 +267,8 @@ def run_ingest(
     if max_events is not None:
         events = events[:max_events]
 
+    prune_stale()
+
     summary: dict = {
         "listing_path": str(listing_path),
         "candidates": len(events),
@@ -222,7 +281,9 @@ def run_ingest(
         guessed_id = event_id_from_slug(le.slug)
         try:
             if guessed_id:
-                detail_html, cache_path = fetcher.fetch_event(le.url, guessed_id, force=force)
+                detail_html, cache_path = fetcher.fetch_event(
+                    le.url, guessed_id, force=force
+                )
             else:
                 url = le.url if le.url.endswith("/") else le.url + "/"
                 detail_html = fetcher.get_text(url)
@@ -246,6 +307,84 @@ def run_ingest(
             logger.info("ingested event %s (%s)", eid, le.slug)
         except Exception as exc:  # noqa: BLE001
             logger.exception("failed %s: %s", le.slug, exc)
-            summary["failed"].append({"slug": le.slug, "error": str(exc)})
+            err = str(exc)
+            fail_item = {
+                "slug": le.slug,
+                "url": le.url,
+                "event_id": guessed_id,
+                "error": err,
+            }
+            summary["failed"].append(fail_item)
+            if guessed_id:
+                register_failure(
+                    event_id=guessed_id,
+                    slug=le.slug,
+                    url=le.url,
+                    event_type=le.event_type,
+                    error=err,
+                )
+                # Shell row so catch-up / incomplete scans still see the day.
+                try:
+                    upsert_event_stub(
+                        event_id=guessed_id,
+                        source_url=le.url,
+                        event_type=le.event_type,
+                        slug=le.slug,
+                        db_path=db_path,
+                    )
+                except Exception as stub_exc:  # noqa: BLE001
+                    logger.warning("stub upsert failed for %s: %s", guessed_id, stub_exc)
 
+    return summary
+
+
+def retry_pending_ingests(
+    *,
+    db_path: Path | None = None,
+    fetcher: MtgoFetcher | None = None,
+) -> dict:
+    """Force-refetch every ``ingest_pending`` entry. Clears successes."""
+    from .ingest_pending import load_pending
+
+    ensure_dirs()
+    init_db(db_path)
+    fetcher = fetcher or MtgoFetcher()
+    prune_stale()
+    pending = load_pending()
+    summary: dict = {"candidates": len(pending), "ingested": [], "failed": []}
+    for item in pending:
+        eid = str(item["event_id"])
+        url = (item.get("url") or "").strip()
+        slug = item.get("slug") or eid
+        if not url:
+            summary["failed"].append({"event_id": eid, "error": "missing url"})
+            continue
+        try:
+            html, cache_path = fetcher.fetch_event(url, eid, force=True)
+            got = ingest_event_html(
+                html,
+                source_url=url,
+                raw_path=str(cache_path),
+                fallback_type=item.get("event_type"),
+                db_path=db_path,
+            )
+            with db_session(db_path or DB_PATH) as conn:
+                n = conn.execute(
+                    "SELECT COUNT(*) AS c FROM decks WHERE event_id = ?", (got,)
+                ).fetchone()["c"]
+            if int(n) == 0:
+                raise ValueError("decklists still empty after pending retry")
+            summary["ingested"].append(got)
+            logger.info("pending retry ingested %s (%s) decks=%s", got, slug, n)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pending retry failed %s: %s", eid, exc)
+            err = str(exc)
+            summary["failed"].append({"event_id": eid, "slug": slug, "url": url, "error": err})
+            register_failure(
+                event_id=eid,
+                slug=slug,
+                url=url,
+                event_type=item.get("event_type"),
+                error=err,
+            )
     return summary

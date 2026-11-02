@@ -110,17 +110,35 @@ def cmd_run_daily(args: argparse.Namespace) -> int:
     failed = list(summary["failed"])
     if catchup and catchup.failed:
         failed.extend(catchup.failed)
-    if failed:
+    # Dedupe by event_id/slug for a single Discord alert.
+    seen_fail: set[str] = set()
+    unique_failed: list[dict] = []
+    for item in failed:
+        key = str(item.get("event_id") or item.get("slug") or item)
+        if key in seen_fail:
+            continue
+        seen_fail.add(key)
+        unique_failed.append(item)
+    if unique_failed:
+        from .discord_summary import post_ingest_failure_alert
+
         # Report + catch-up already ran. Lookback HTML flakes on old events must
         # not prevent Actions from committing DB/reports or posting Discord
         # (workflow also continues on failure; keep exit 2 as a visible signal).
         logging.error(
             "run-daily finished with %s ingest/catch-up failure(s) after writing report",
-            len(failed),
+            len(unique_failed),
         )
-        for item in failed[:10]:
+        for item in unique_failed[:10]:
             logging.error("  failure detail: %s", item)
+        try:
+            post_ingest_failure_alert(unique_failed, as_of=today)
+        except Exception as exc:  # noqa: BLE001 — alert must not hide exit 2
+            logging.exception("ingest failure Discord alert failed: %s", exc)
+        # Machine-readable for Actions (optional secondary alert step).
+        print(f"INGEST_FAILURES={len(unique_failed)}")
         return 2
+    print("INGEST_FAILURES=0")
     return 0
 
 
