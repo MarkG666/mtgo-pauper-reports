@@ -115,6 +115,8 @@ jobs:
         if: steps.mode.outputs.run_daily == '1'
         env:
           PYTHONPATH: src
+          # Personal ops channel only — never fall back to group DISCORD_WEBHOOK_URL
+          DISCORD_ALERT_WEBHOOK_URL: ${{ secrets.DISCORD_ALERT_WEBHOOK_URL }}
         run: python -m pauper_meta run-daily
 
       # Lookback HTML flakes (old events) make run-daily exit 2 AFTER writing today's
@@ -127,7 +129,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/pauper.sqlite reports/ data/discord_posted.json
+          git add data/pauper.sqlite reports/ data/discord_posted.json data/ingest_pending.json
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
@@ -146,11 +148,11 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          # One Discord post per event report stem (YYYY-MM-DD-N) for today,
-          # yesterday, and day-before (evening Challenges + catch-up window).
+          # One Discord post per event report stem (YYYY-MM-DD-N) for today and
+          # the previous 4 JST days (covers weekend ingest miss → weekday catch-up).
           mapfile -t STEMS < <(python -c "
           from pauper_meta.discord_summary import recent_daily_stems
-          for s in recent_daily_stems(days=3):
+          for s in recent_daily_stems(days=5):
               print(s)
           ")
           if [ "${#STEMS[@]}" -eq 0 ]; then

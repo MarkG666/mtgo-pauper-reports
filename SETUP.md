@@ -49,6 +49,17 @@
 
 Secret が無いときでも集計自体は動きますが、Discord には投稿されません（ログに警告が出ます）。
 
+### 任意: 取得失敗アラート用（個人チャンネル）
+
+日次・週次の要約とは **別** の Webhook です。グループチャンネルには送りません。
+
+1. 自分専用サーバー／チャンネルを用意する  
+2. そこで **新しいウェブフック** を作り URL をコピー  
+3. GitHub Secret を追加  
+   - Name: `DISCORD_ALERT_WEBHOOK_URL`（一字一句この名前）  
+   - Secret: 個人用 Webhook URL  
+4. 未設定のままなら、失敗アラートだけスキップ（集計・グループ投稿は通常どおり）
+
 ---
 
 ## 3. Actions を有効にして初回実行
@@ -99,6 +110,7 @@ Secret が無いときでも集計自体は動きますが、Discord には投�
 | 症状 | 対処 |
 |------|------|
 | Discord に何も来ない | Secret 名が `DISCORD_WEBHOOK_URL` か確認。Webhook を作り直して Secret を更新 |
+| 失敗アラートだけ来ない | 個人用 Secret `DISCORD_ALERT_WEBHOOK_URL` を確認（グループ Webhook にはフォールバックしない） |
 | Actions が灰色／動かない | Actions タブでワークフローを Enable。リポジトリ Settings → Actions → General で許可されているか確認 |
 | push（書き込み）が失敗する | Settings → Actions → General → Workflow permissions で **Read and write** を選ぶ |
 | Webhook URL が漏れた | Discord 側でその Webhook を削除→新規作成→Secret を差し替え |

@@ -317,14 +317,31 @@ def post_discord_webhook(content: str, webhook_url: str, *, username: str = "Pau
 
 
 def resolve_webhook_url(explicit: str | None = None) -> str | None:
+    """Group / public daily+weekly webhook (``DISCORD_WEBHOOK_URL``)."""
     if explicit and explicit.strip():
         return explicit.strip()
     env = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
     return env or None
 
 
-def recent_daily_stems(*, days: int = 3, as_of: date | None = None) -> list[str]:
-    """Per-event report stems for today and the previous ``days-1`` JST days."""
+def resolve_alert_webhook_url(explicit: str | None = None) -> str | None:
+    """Personal ops webhook for ingest failures only.
+
+    Uses ``DISCORD_ALERT_WEBHOOK_URL``. **Never** falls back to the group
+    ``DISCORD_WEBHOOK_URL`` — missing secret means skip the alert quietly.
+    """
+    if explicit and explicit.strip():
+        return explicit.strip()
+    env = os.environ.get("DISCORD_ALERT_WEBHOOK_URL", "").strip()
+    return env or None
+
+
+def recent_daily_stems(*, days: int = 5, as_of: date | None = None) -> list[str]:
+    """Per-event report stems for today and the previous ``days-1`` JST days.
+
+    Default 5 days so a weekend ingest miss can still Discord-post after the
+    next weekday run (without waiting for a manual dispatch).
+    """
     ensure_dirs()
     init_db()
     t = as_of or today_jst()
@@ -334,6 +351,69 @@ def recent_daily_stems(*, days: int = 3, as_of: date | None = None) -> list[str]
             day = t - timedelta(days=i)
             stems.extend(list_event_report_stems_for_day(conn, day))
     return stems
+
+
+def build_ingest_failure_alert(
+    failures: list[dict[str, Any]],
+    *,
+    as_of: date | None = None,
+) -> str | None:
+    """One compact Discord message listing failed ingest/catch-up events.
+
+    Returns ``None`` when ``failures`` is empty (caller should skip post).
+    """
+    if not failures:
+        return None
+    day = (as_of or today_jst()).isoformat()
+    lines = [
+        f"**Pauper ingest 失敗** `{day}`（{len(failures)}件）",
+        "",
+        "取得はできたが decklists 未公開／HTML 欠落、または catch-up 再試行失敗。",
+        "次日の pending 再試行で自動リトライします。",
+        "",
+    ]
+    for item in failures[:15]:
+        eid = item.get("event_id") or "?"
+        slug = item.get("slug") or ""
+        url = item.get("url") or ""
+        err = str(item.get("error") or "")[:120]
+        label = slug or eid
+        if url:
+            lines.append(f"- `{eid}` {label}")
+            lines.append(f"  <{url}>")
+        else:
+            lines.append(f"- `{eid}` {label}")
+        if err:
+            lines.append(f"  → {err}")
+    if len(failures) > 15:
+        lines.append(f"- …他 {len(failures) - 15} 件")
+    return _truncate("\n".join(lines).rstrip() + "\n")
+
+
+def post_ingest_failure_alert(
+    failures: list[dict[str, Any]],
+    *,
+    webhook_url: str | None = None,
+    as_of: date | None = None,
+) -> bool:
+    """POST failure summary to the **personal** alert webhook if configured.
+
+    Requires ``DISCORD_ALERT_WEBHOOK_URL`` (or ``webhook_url``). Does **not**
+    use the group ``DISCORD_WEBHOOK_URL``. Returns True when a message was sent.
+    """
+    text = build_ingest_failure_alert(failures, as_of=as_of)
+    if not text:
+        return False
+    url = resolve_alert_webhook_url(webhook_url)
+    if not url:
+        log.warning(
+            "DISCORD_ALERT_WEBHOOK_URL not set — skipping ingest failure alert "
+            "(group DISCORD_WEBHOOK_URL is never used for alerts)"
+        )
+        return False
+    post_discord_webhook(text, url, username="Pauper Meta Alerts")
+    log.info("posted ingest failure alert (%s failures, %s chars)", len(failures), len(text))
+    return True
 
 
 def generate_and_maybe_post(
