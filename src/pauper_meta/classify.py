@@ -23,6 +23,9 @@ SIGNATURES: list[tuple[str, list[tuple[str, int]]]] = [
             ("Makeshift Munitions", 2),
         ],
     ),
+    # Ephemerate family base score (color via _resolve_ephemerate_family).
+    # Ephemerate + Mulldrifter + Archaeomancer package; black splash → Esper,
+    # otherwise Jeskai (true WRU / non-black shells).
     (
         "Jeskai Ephemerate",
         [
@@ -419,6 +422,44 @@ _HAWK_GREEN_SPLASH = frozenset(
 _HAWK_FAMILY = frozenset(
     {"Boros Hawk", "Mardu Hawk", "Jeskai Hawk", "4c Hawk", "Naya Hawk", "5c Hawk"}
 )
+
+# Ephemerate color naming (mainboard). Snacker / Vandalblast excluded via
+# _COLOR_NAMING_EXCLUSIONS. Lands alone do not rename Jeskai → Esper.
+_EPHEMERATE_BLACK_SPLASH = frozenset(
+    {
+        "Baleful Strix",
+        "Cast Down",
+        "Cut Down",
+        "Refurbished Familiar",
+        "Crypt Incursion",
+        "Suffocating Fumes",
+        "Extract a Confession",
+        "Snuff Out",
+        "Grim Bauble",
+        "Tithing Blade",
+        "Duress",
+        "Arms of Hadar",
+        "Chainer's Edict",
+        "Nihil Spellbomb",
+        "Shadow Prophecy",
+        "Thorn of the Black Rose",
+        "Drown in Sorrow",
+        "Gurmag Angler",
+        "Okiba-Gang Shinobi",
+        "Blood Fountain",
+        "Deadly Dispute",
+        "Fanatical Offering",
+        "Eviscerator's Insight",
+        "Mukotai Ambusher",
+        "Agony Warp",
+        "Defile",
+        "Echoing Decay",
+        "Unexpected Fangs",
+        "Vampire Sovereign",
+        "Omen of the Dead",
+    }
+)
+_EPHEMERATE_FAMILY = frozenset({"Jeskai Ephemerate", "Esper Ephemerate"})
 
 # Faeries color naming (mainboard). Snacker / Vandalblast excluded via
 # _COLOR_NAMING_EXCLUSIONS (and Vandalblast omitted from the red set below).
@@ -1012,6 +1053,42 @@ def _resolve_madness_family(counts: Counter[str], best_name: str, scores: list[t
     return "Unknown"
 
 
+def _is_ephemerate_core(counts: Counter[str]) -> bool:
+    """Ephemerate bounce package: Ephemerate + Mulldrifter + Archaeomancer."""
+    return (
+        counts.get("Ephemerate", 0) >= 1
+        and counts.get("Mulldrifter", 0) >= 1
+        and counts.get("Archaeomancer", 0) >= 1
+    )
+
+
+def _ephemerate_variant_name(counts: Counter[str]) -> str:
+    """Split Ephemerate by black splash: black → Esper; else Jeskai.
+
+    Sneaky Snacker / Vandalblast alone do not add a color (global exclusions).
+    """
+    if _has_splash(counts, _EPHEMERATE_BLACK_SPLASH):
+        return "Esper Ephemerate"
+    return "Jeskai Ephemerate"
+
+
+def _resolve_ephemerate_family(
+    counts: Counter[str], best_name: str, scores: list[tuple[str, int]]
+) -> str:
+    """Color-split Ephemerate when the package (or signature) already won.
+
+    Does not steal Familiars: only runs when best_name is already in the
+    Ephemerate family (including Dimir Control → Jeskai promotion upstream).
+    """
+    if best_name not in _EPHEMERATE_FAMILY:
+        return best_name
+    if _is_ephemerate_core(counts):
+        return _ephemerate_variant_name(counts)
+    # Signature hit without the bounce package (e.g. Ephemerate-only Orzhov):
+    # keep the Jeskai label; do not invent Esper from black alone.
+    return "Jeskai Ephemerate"
+
+
 def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     counts = Counter(main)
     scores: list[tuple[str, int]] = []
@@ -1062,6 +1139,9 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     # (final Dimir/Izzet/Mono-Blue/Grixis name comes from _resolve_faeries_family).
     if best_name in ("Dimir Control", "U Terror") and counts.get("Spellstutter Sprite", 0) >= 2:
         best_name = "Dimir Faeries"
+    # BUW Ephemerate bounce that scored as Dimir Control (e.g. Brvnx 2026-09-21).
+    if best_name == "Dimir Control" and _is_ephemerate_core(counts):
+        best_name = "Jeskai Ephemerate"
     if best_name == "Burn" and counts.get("Grab the Prize", 0) + counts.get("Sneaky Snacker", 0) >= 3:
         best_name = "Mono-Red Madness"
     best_name = _resolve_mono_red_aggro(counts, best_name)
@@ -1071,6 +1151,7 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     # After Faeries demotion may land on Affinity signature — apply color name / core gate.
     best_name = _resolve_affinity_family(counts, best_name, scores)
     best_name = _resolve_madness_family(counts, best_name, scores)
+    best_name = _resolve_ephemerate_family(counts, best_name, scores)
     return Classification(archetype=best_name, score=best_score, runners_up=scores[1:4])
 
 
