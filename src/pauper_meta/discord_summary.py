@@ -7,13 +7,19 @@ import logging
 import os
 import urllib.error
 import urllib.request
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 from .db import db_session, init_db
 from .paths import DISCORD_POSTED_PATH, REPORTS_DIR, ensure_dirs
-from .report_daily import DailyReportData, Top8Entry, build_report_data, today_jst
+from .report_daily import (
+    DailyReportData,
+    Top8Entry,
+    build_report_data,
+    list_event_report_stems_for_day,
+    today_jst,
+)
 
 log = logging.getLogger(__name__)
 
@@ -24,8 +30,18 @@ META_TOP_N = 8
 WEEKLY_TOP_N = 10
 
 
+def _key_str(report_key: date | str) -> str:
+    if isinstance(report_key, date):
+        return report_key.isoformat()
+    return str(report_key)
+
+
 def load_discord_posted(path: Path | None = None) -> dict[str, list[str]]:
-    """Load posted-date tracker. Shape: ``{"daily": ["YYYY-MM-DD", ...], "weekly": [...]}``."""
+    """Load posted-key tracker.
+
+    Shape: ``{"daily": ["YYYY-MM-DD-<n>" | legacy "YYYY-MM-DD", ...], "weekly": [...]}``.
+    Daily keys are **per-event report stems** after the one-event-one-file change.
+    """
     p = path or DISCORD_POSTED_PATH
     if not p.exists():
         return {"daily": [], "weekly": []}
@@ -43,52 +59,61 @@ def load_discord_posted(path: Path | None = None) -> dict[str, list[str]]:
     return out
 
 
-def was_discord_posted(mode: str, report_date: date, path: Path | None = None) -> bool:
+def was_discord_posted(mode: str, report_key: date | str, path: Path | None = None) -> bool:
     data = load_discord_posted(path)
-    return report_date.isoformat() in data.get(mode, [])
+    return _key_str(report_key) in data.get(mode, [])
 
 
-def mark_discord_posted(mode: str, report_date: date, path: Path | None = None) -> None:
+def mark_discord_posted(mode: str, report_key: date | str, path: Path | None = None) -> None:
     """Record that we successfully posted; idempotent. File is Git-tracked."""
     ensure_dirs()
     p = path or DISCORD_POSTED_PATH
     data = load_discord_posted(p)
     key = "weekly" if mode == "weekly" else "daily"
     dates = set(data.get(key, []))
-    dates.add(report_date.isoformat())
+    dates.add(_key_str(report_key))
     data[key] = sorted(dates)
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    log.info("marked discord posted mode=%s date=%s path=%s", key, report_date.isoformat(), p)
+    log.info("marked discord posted mode=%s key=%s path=%s", key, _key_str(report_key), p)
 
 
-def unmark_discord_posted(mode: str, report_date: date, path: Path | None = None) -> bool:
-    """Remove a mode+date from the tracker so the next Discord step can re-post.
+def unmark_discord_posted(mode: str, report_key: date | str, path: Path | None = None) -> bool:
+    """Remove a mode+key from the tracker so the next Discord step can re-post.
 
-    Used when catch-up regenerates a day that gained new events after an earlier
-    post (e.g. Friday 04:00 JST Challenge posted at 13:00, then 22:00 lands).
-    Returns True if the date was present and removed.
+    ``report_key`` may be a per-event stem (``2026-10-30-1``) or a legacy day
+    (``2026-10-30``). Returns True if something was removed.
     """
     ensure_dirs()
     p = path or DISCORD_POSTED_PATH
     data = load_discord_posted(p)
     key = "weekly" if mode == "weekly" else "daily"
     dates = set(data.get(key, []))
-    iso = report_date.isoformat()
-    if iso not in dates:
+    iso = _key_str(report_key)
+    removed = False
+    if iso in dates:
+        dates.discard(iso)
+        removed = True
+    # Unmarking a calendar day also clears ``YYYY-MM-DD-<n>`` stems for that day.
+    if len(iso) == 10 and iso[4] == "-" and iso[7] == "-":
+        prefix = iso + "-"
+        stem_hits = {x for x in dates if x.startswith(prefix)}
+        if stem_hits:
+            dates -= stem_hits
+            removed = True
+    if not removed:
         return False
-    dates.discard(iso)
     data[key] = sorted(dates)
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    log.info("unmarked discord posted mode=%s date=%s path=%s", key, iso, p)
+    log.info("unmarked discord posted mode=%s key=%s path=%s", key, iso, p)
     return True
 
 
-def report_github_url(report_date: str, *, repo: str | None = None, branch: str | None = None) -> str:
+def report_github_url(report_stem: str, *, repo: str | None = None, branch: str | None = None) -> str:
     repo = repo or os.environ.get("GITHUB_REPOSITORY") or DEFAULT_REPO
     branch = branch or os.environ.get("GITHUB_REF_NAME") or DEFAULT_BRANCH
     if branch.startswith("refs/heads/"):
         branch = branch.removeprefix("refs/heads/")
-    return f"https://github.com/{repo}/blob/{branch}/reports/daily/{report_date}.md"
+    return f"https://github.com/{repo}/blob/{branch}/reports/daily/{report_stem}.md"
 
 
 def _fmt_pct(share: float) -> str:
@@ -144,17 +169,20 @@ def _build_daily_summary_body(
     distinctive_links: bool = True,
     meta_top_n: int = META_TOP_N,
 ) -> str:
-    """Assemble daily summary text.
+    """Assemble daily summary text for **one event**.
 
     ``top8_links``:
       - ``per-deck``: each Top8 line gets ``[リスト](#deck_…)`` markdown
       - ``event``: one ``リストページ: <event-url>`` under each Top8 header
       - ``none``: no Top8 deck URLs
     """
-    lines: list[str] = [
-        f"**Pauper 日次** `{data.report_date}`",
-        "",
-    ]
+    stem = data.report_stem or data.report_date
+    if data.event_index and data.events_on_day > 1:
+        header = f"**Pauper** `{stem}`（同日 {data.event_index}/{data.events_on_day}）"
+    else:
+        header = f"**Pauper** `{stem}`"
+
+    lines: list[str] = [header, ""]
 
     if not data.events:
         lines.append("対象イベントなし（新規なし）。")
@@ -165,7 +193,7 @@ def _build_daily_summary_body(
             lines.append(f"- {ev.name} (`{ev.event_type}`) — {pc}")
         lines.append("")
 
-        # All events with a Top8 bracket (meta Top8 column sums every event)
+        # Single-event report: at most one Top8 block
         bracket_events = [e for e in data.events if e.top8_bracket]
         include_per_deck = top8_links == "per-deck"
         for bracket_ev in bracket_events:
@@ -177,7 +205,7 @@ def _build_daily_summary_body(
             lines.append("")
 
     if data.meta_overview:
-        lines.append("**メタ Top32（上位）**")
+        lines.append("**メタ Top32（この大会）**")
         for row in data.meta_overview[:meta_top_n]:
             lines.append(
                 f"- {row.archetype}: {row.count} ({_fmt_pct(row.share)}) "
@@ -212,7 +240,8 @@ def build_daily_summary(
     ``リストページ: <event-url>`` line per Top8 block (omit per-deck URLs).
     Hard truncate only as last resort.
     """
-    url = report_url or report_github_url(data.report_date)
+    stem = data.report_stem or data.report_date
+    url = report_url or report_github_url(stem)
     attempts: list[dict[str, Any]] = [
         {"top8_links": "per-deck", "distinctive_links": True, "meta_top_n": META_TOP_N},
         {"top8_links": "per-deck", "distinctive_links": False, "meta_top_n": META_TOP_N},
@@ -234,6 +263,7 @@ def build_weekly_summary(
     *,
     report_url: str | None = None,
 ) -> str:
+    # Weekly digest still keys off the as-of calendar day (not per-event).
     url = report_url or report_github_url(data.report_date)
     lines: list[str] = [
         f"**Pauper 週次ダイジェスト** as_of `{data.report_date}`",
@@ -293,10 +323,25 @@ def resolve_webhook_url(explicit: str | None = None) -> str | None:
     return env or None
 
 
+def recent_daily_stems(*, days: int = 3, as_of: date | None = None) -> list[str]:
+    """Per-event report stems for today and the previous ``days-1`` JST days."""
+    ensure_dirs()
+    init_db()
+    t = as_of or today_jst()
+    stems: list[str] = []
+    with db_session() as conn:
+        for i in range(days):
+            day = t - timedelta(days=i)
+            stems.extend(list_event_report_stems_for_day(conn, day))
+    return stems
+
+
 def generate_and_maybe_post(
     *,
     mode: str,
     report_date: date | None = None,
+    report_stem: str | None = None,
+    event_index: int | None = None,
     webhook_url: str | None = None,
     post: bool = False,
     out_path: Path | None = None,
@@ -305,50 +350,73 @@ def generate_and_maybe_post(
 ) -> str:
     """Build summary text; optionally write file and/or POST to Discord.
 
+    Daily mode posts **one event** identified by ``report_stem`` (``YYYY-MM-DD-N``)
+    or by ``report_date`` + optional ``event_index`` (default first event).
+
     When ``post`` and ``skip_if_posted`` (default), skip the webhook if
-    ``data/discord_posted.json`` already lists this mode+date — prevents
+    ``data/discord_posted.json`` already lists this mode+stem — prevents
     double-posts on catch-up or re-runs. Successful posts update that file.
     ``force_post`` bypasses the dedupe check.
     """
     ensure_dirs()
     init_db()
     rd = report_date or today_jst()
+    idx = event_index
+    stem = report_stem
+    if stem:
+        # Parse YYYY-MM-DD-N
+        parts = stem.rsplit("-", 1)
+        if len(parts) == 2 and parts[1].isdigit() and len(parts[0]) == 10:
+            rd = date.fromisoformat(parts[0])
+            idx = int(parts[1])
+        else:
+            # Legacy bare date stem
+            rd = date.fromisoformat(stem[:10])
+            idx = idx or 1
+
     with db_session() as conn:
-        data = build_report_data(conn, report_date=rd)
+        if mode == "weekly":
+            data = build_report_data(conn, report_date=rd)
+        else:
+            data = build_report_data(
+                conn,
+                report_date=rd,
+                event_index=idx,
+            )
 
     if mode == "weekly":
         text = build_weekly_summary(data)
+        track_key: str = data.report_date
     else:
         text = build_daily_summary(data)
+        track_key = data.report_stem or data.report_date
 
     if out_path:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(text, encoding="utf-8")
         log.info("wrote summary: %s (%s chars)", out_path, len(text))
 
-    # Prefer committed report path existence for URL sanity (non-fatal)
-    md = REPORTS_DIR / f"{data.report_date}.md"
-    if not md.exists():
+    md = REPORTS_DIR / f"{track_key}.md"
+    if mode != "weekly" and data.events and not md.exists():
         log.warning("daily report md missing at %s (URL may 404 until commit)", md)
 
     if post:
         track_mode = "weekly" if mode == "weekly" else "daily"
-        if skip_if_posted and not force_post and was_discord_posted(track_mode, rd):
+        if skip_if_posted and not force_post and was_discord_posted(track_mode, track_key):
             log.info(
                 "Discord %s for %s already posted — skipping (dedupe)",
                 track_mode,
-                rd.isoformat(),
+                track_key,
             )
         elif (
             track_mode == "daily"
             and not force_post
             and not data.events
         ):
-            # No Challenge/Prelim on this JST report day — do not post an empty
-            # or carry-forward summary (avoids duplicate-looking posts).
+            # No Challenge/Prelim — do not post an empty summary.
             log.info(
                 "Discord daily for %s has no events — skipping post (not marked)",
-                rd.isoformat(),
+                track_key,
             )
         else:
             url = resolve_webhook_url(webhook_url)
@@ -358,8 +426,7 @@ def generate_and_maybe_post(
                 )
             else:
                 post_discord_webhook(text, url)
-                # Mark only after a successful webhook (post_discord_webhook raises otherwise)
-                mark_discord_posted(track_mode, rd)
+                mark_discord_posted(track_mode, track_key)
                 log.info("posted %s summary to Discord (%s chars)", mode, len(text))
 
     return text

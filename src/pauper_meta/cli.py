@@ -21,7 +21,7 @@ from .players import (
     query_frequent_players,
     rebuild_player_event_results,
 )
-from .report_daily import today_jst, write_report
+from .report_daily import today_jst, write_report, write_reports_for_day
 
 
 def _setup_logging(report_date: str) -> Path:
@@ -67,13 +67,17 @@ def cmd_run_daily(args: argparse.Namespace) -> int:
     )
     with db_session() as conn:
         apply_all(conn)
-        report_path, data = write_report(conn, report_date=today)
-    logging.info(
-        "report written: %s events=%s distinctive=%s",
-        report_path,
-        len(data.events),
-        len(data.distinctive),
-    )
+        written = write_reports_for_day(conn, report_date=today)
+        if written:
+            report_path = written[0][0]
+            logging.info(
+                "reports written: %s (events_on_day=%s)",
+                [str(p) for p, _ in written],
+                written[0][1].events_on_day,
+            )
+        else:
+            report_path, _data = write_report(conn, report_date=today)
+            logging.info("no events today (JST=%s); no per-event md", today.isoformat())
 
     catchup = None
     if not args.skip_catchup:
@@ -126,9 +130,9 @@ def cmd_apply_overrides(args: argparse.Namespace) -> int:
     with db_session() as conn:
         stats = apply_all(conn)
         rd = date.fromisoformat(args.date) if args.date else today_jst()
-        report_path, _data = write_report(conn, report_date=rd)
+        written = write_reports_for_day(conn, report_date=rd)
     print(f"overrides applied: {stats}")
-    print(f"report={report_path}")
+    print(f"reports={[str(p) for p, _ in written] or ['(none)']}")
     return 0
 
 
@@ -137,8 +141,14 @@ def cmd_report(args: argparse.Namespace) -> int:
     init_db()
     rd = date.fromisoformat(args.date) if args.date else today_jst()
     with db_session() as conn:
-        report_path, data = write_report(conn, report_date=rd)
-    print(f"report={report_path} events={len(data.events)}")
+        written = write_reports_for_day(conn, report_date=rd)
+    if not written:
+        print(f"reports=[] events=0 date={rd.isoformat()}")
+        return 0
+    print(
+        f"reports={[str(p) for p, _ in written]} "
+        f"events_on_day={written[0][1].events_on_day}"
+    )
     return 0
 
 
@@ -202,11 +212,13 @@ def cmd_player_stats(args: argparse.Namespace) -> int:
 def cmd_discord_summary(args: argparse.Namespace) -> int:
     """Generate Discord daily/weekly summary; optionally POST to webhook."""
     ensure_dirs()
-    rd = date.fromisoformat(args.date) if args.date else today_jst()
+    rd = date.fromisoformat(args.date) if args.date else None
     out = Path(args.out) if args.out else None
     text = generate_and_maybe_post(
         mode=args.mode,
         report_date=rd,
+        report_stem=args.stem,
+        event_index=args.event_index,
         webhook_url=args.webhook,
         post=bool(args.post),
         out_path=out,
@@ -284,6 +296,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="daily = 日次要約 / weekly = 累積ダイジェスト",
     )
     s.add_argument("--date", type=str, default=None, help="Report date YYYY-MM-DD (JST)")
+    s.add_argument(
+        "--stem",
+        type=str,
+        default=None,
+        help="Per-event report stem YYYY-MM-DD-N (preferred for daily Discord)",
+    )
+    s.add_argument(
+        "--event-index",
+        type=int,
+        default=None,
+        help="1-based event index on --date (default: first event)",
+    )
     s.add_argument("--out", type=str, default=None, help="Write summary text to this path")
     s.add_argument(
         "--post",
@@ -293,7 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--force-post",
         action="store_true",
-        help="Post even if data/discord_posted.json already has this mode+date",
+        help="Post even if data/discord_posted.json already has this mode+stem",
     )
     s.add_argument("--webhook", type=str, default=None, help="Webhook URL (prefer Secret/env)")
     s.set_defaults(func=cmd_discord_summary)
