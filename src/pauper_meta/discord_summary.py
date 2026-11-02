@@ -16,9 +16,14 @@ from .paths import DISCORD_POSTED_PATH, REPORTS_DIR, ensure_dirs
 from .report_daily import (
     DailyReportData,
     Top8Entry,
+    _parse_event_date,
+    assign_holding_stems,
     build_report_data,
+    build_report_data_for_event,
     list_event_report_stems_for_day,
+    mtgo_holding_date,
     today_jst,
+    _events_on_date,
 )
 
 log = logging.getLogger(__name__)
@@ -39,8 +44,8 @@ def _key_str(report_key: date | str) -> str:
 def load_discord_posted(path: Path | None = None) -> dict[str, list[str]]:
     """Load posted-key tracker.
 
-    Shape: ``{"daily": ["YYYY-MM-DD-<n>" | legacy "YYYY-MM-DD", ...], "weekly": [...]}``.
-    Daily keys are **per-event report stems** after the one-event-one-file change.
+    Shape: ``{"daily": ["YYYY-MM-DD" | collision "YYYY-MM-DD-<n>" | legacy JST-index, ...],
+    "weekly": [...]}``. Daily keys are **MTGO holding-date stems**.
     """
     p = path or DISCORD_POSTED_PATH
     if not p.exists():
@@ -80,8 +85,9 @@ def mark_discord_posted(mode: str, report_key: date | str, path: Path | None = N
 def unmark_discord_posted(mode: str, report_key: date | str, path: Path | None = None) -> bool:
     """Remove a mode+key from the tracker so the next Discord step can re-post.
 
-    ``report_key`` may be a per-event stem (``2026-10-30-1``) or a legacy day
-    (``2026-10-30``). Returns True if something was removed.
+    ``report_key`` may be a holding-date stem (``2026-10-29`` / ``2026-10-29-1``)
+    or a bare calendar day. Unmarking a bare day also clears ``YYYY-MM-DD-<n>``
+    collision stems with that prefix. Returns True if something was removed.
     """
     ensure_dirs()
     p = path or DISCORD_POSTED_PATH
@@ -176,21 +182,19 @@ def _build_daily_summary_body(
       - ``event``: one ``リストページ: <event-url>`` under each Top8 header
       - ``none``: no Top8 deck URLs
     """
-    stem = data.report_stem or data.report_date
-    if data.event_index and data.events_on_day > 1:
-        header = f"**Pauper** `{stem}`（同日 {data.event_index}/{data.events_on_day}）"
-    else:
-        header = f"**Pauper** `{stem}`"
-
-    lines: list[str] = [header, ""]
+    lines: list[str] = []
 
     if not data.events:
+        stem = data.report_stem or data.report_date
+        lines.append(f"**Pauper** `{stem}`")
+        lines.append("")
         lines.append("対象イベントなし（新規なし）。")
     else:
-        lines.append("**イベント**")
-        for ev in data.events:
-            pc = f"{ev.player_count}人" if ev.player_count is not None else "?"
-            lines.append(f"- {ev.name} (`{ev.event_type}`) — {pc}")
+        # Header: Pauper Challenge 32 ("2026-10-29") — 51人
+        ev0 = data.events[0]
+        holding = data.holding_date or data.report_stem or data.report_date
+        pc = f"{ev0.player_count}人" if ev0.player_count is not None else "?"
+        lines.append(f'**{ev0.name}** ("{holding}") — {pc}')
         lines.append("")
 
         # Single-event report: at most one Top8 block
@@ -430,8 +434,9 @@ def generate_and_maybe_post(
 ) -> str:
     """Build summary text; optionally write file and/or POST to Discord.
 
-    Daily mode posts **one event** identified by ``report_stem`` (``YYYY-MM-DD-N``)
-    or by ``report_date`` + optional ``event_index`` (default first event).
+    Daily mode posts **one event** identified by ``report_stem`` (MTGO holding
+    date ``YYYY-MM-DD``, or ``YYYY-MM-DD-N`` on collision) or by ``report_date``
+    (JST) + optional ``event_index`` (default first event).
 
     When ``post`` and ``skip_if_posted`` (default), skip the webhook if
     ``data/discord_posted.json`` already lists this mode+stem — prevents
@@ -443,20 +448,44 @@ def generate_and_maybe_post(
     rd = report_date or today_jst()
     idx = event_index
     stem = report_stem
-    if stem:
-        # Parse YYYY-MM-DD-N
-        parts = stem.rsplit("-", 1)
-        if len(parts) == 2 and parts[1].isdigit() and len(parts[0]) == 10:
-            rd = date.fromisoformat(parts[0])
-            idx = int(parts[1])
-        else:
-            # Legacy bare date stem
-            rd = date.fromisoformat(stem[:10])
-            idx = idx or 1
-
     with db_session() as conn:
         if mode == "weekly":
             data = build_report_data(conn, report_date=rd)
+        elif stem:
+            # Resolve stem → event by MTGO holding date (and optional -N).
+            # Holding date and JST start day can differ by ~1 day, so search a
+            # small JST window around the date embedded in the stem.
+            hold = date.fromisoformat(stem[:10])
+            candidates: list = []
+            for delta in range(-1, 3):
+                candidates.extend(_events_on_date(conn, hold + timedelta(days=delta)))
+            by_id = {str(r["id"]): r for r in candidates}
+            stems = assign_holding_stems(list(by_id.values()))
+            match_id = None
+            for eid, (s, _hd, _i, _n) in stems.items():
+                if s == stem:
+                    match_id = eid
+                    break
+            if match_id is None:
+                for eid, row in by_id.items():
+                    hd = mtgo_holding_date(row["source_url"], row["start_time"])
+                    if hd and hd.isoformat() == stem[:10]:
+                        match_id = eid
+                        break
+            if match_id is None:
+                raise ValueError(f"no event for report stem {stem}")
+            row = by_id[match_id]
+            s, hd, i, n = stems[match_id]
+            jst = _parse_event_date(row["start_time"]) or hold
+            data = build_report_data_for_event(
+                conn,
+                row,
+                report_date=jst,
+                report_stem=s,
+                holding_date=hd,
+                event_index=i,
+                events_on_day=n,
+            )
         else:
             data = build_report_data(
                 conn,

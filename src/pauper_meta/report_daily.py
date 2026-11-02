@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
@@ -9,8 +11,6 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
-
-import json
 
 from .colors import color_identity_from_cards, display_archetype
 from .distinctive import (
@@ -104,7 +104,7 @@ class TrendDelta:
 
 @dataclass
 class DailyReportData:
-    report_date: str  # JST calendar date (YYYY-MM-DD)
+    report_date: str  # JST calendar date used for generation window (YYYY-MM-DD)
     generated_at: str
     events: list[EventSummary]  # exactly one event for per-event reports; empty if none
     meta_overview: list[ArchCount]
@@ -113,31 +113,91 @@ class DailyReportData:
     distinctive: list[DistinctiveFlag]
     notes: list[str] = field(default_factory=list)
     # Per-event file identity: reports/daily/{report_stem}.md
-    # Scheme: YYYY-MM-DD-<n> (n = 1-based index by start_time on that JST day).
+    # Scheme: MTGO holding date ``YYYY-MM-DD`` (from decklist URL/slug).
+    # Collision on the same holding date → ``YYYY-MM-DD-1``, ``-2`` (start_time order).
     report_stem: str = ""
-    event_index: int = 0  # 1-based; 0 when empty
-    events_on_day: int = 0
+    holding_date: str = ""  # MTGO date string YYYY-MM-DD
+    event_index: int = 0  # 1-based among events sharing holding_date when colliding; else 1
+    events_on_day: int = 0  # events sharing this holding_date (1 unless collision)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-def event_report_stem(report_date: date | str, event_index: int) -> str:
-    """Filename stem for one event report: ``YYYY-MM-DD-<n>`` (n starts at 1)."""
-    day = report_date if isinstance(report_date, str) else report_date.isoformat()
-    if event_index < 1:
-        raise ValueError(f"event_index must be >= 1, got {event_index}")
-    return f"{day}-{event_index}"
+_HOLDING_DATE_RE = re.compile(r"(20\d{2}-\d{2}-\d{2})")
+
+
+def mtgo_holding_date(
+    source_url: str | None,
+    start_time: str | None = None,
+) -> date | None:
+    """MTGO challenge holding date as shown on mtgo.com decklist URL/slug.
+
+    Example: ``.../pauper-challenge-32-2026-10-2912857378/`` → ``2026-10-29``.
+    Falls back to the UTC calendar date of ``start_time`` when the URL has no date.
+    """
+    if source_url:
+        m = _HOLDING_DATE_RE.search(str(source_url))
+        if m:
+            try:
+                return date.fromisoformat(m.group(1))
+            except ValueError:
+                pass
+    dt = _parse_event_start_utc(start_time)
+    if dt is not None:
+        return dt.astimezone(timezone.utc).date()
+    return None
+
+
+def event_report_stem(
+    holding_date: date | str,
+    collision_index: int | None = None,
+) -> str:
+    """Filename stem: ``YYYY-MM-DD`` or ``YYYY-MM-DD-<n>`` on holding-date collision."""
+    day = holding_date if isinstance(holding_date, str) else holding_date.isoformat()
+    if collision_index is None or collision_index < 1:
+        return day
+    return f"{day}-{collision_index}"
 
 
 def event_report_path(
-    report_date: date | str,
-    event_index: int,
+    holding_date: date | str,
+    collision_index: int | None = None,
     *,
     reports_dir: Path | None = None,
 ) -> Path:
     out_dir = reports_dir or REPORTS_DIR
-    return out_dir / f"{event_report_stem(report_date, event_index)}.md"
+    return out_dir / f"{event_report_stem(holding_date, collision_index)}.md"
+
+
+def assign_holding_stems(
+    events: list[sqlite3.Row] | list[dict[str, Any]],
+) -> dict[str, tuple[str, date, int, int]]:
+    """Map ``event_id`` → ``(stem, holding_date, index, group_size)``.
+
+    Unique holding date → stem ``YYYY-MM-DD`` (index=1, group_size=1).
+    Collisions → ``YYYY-MM-DD-1``… ordered by ``start_time``.
+    """
+    groups: dict[date, list[Any]] = defaultdict(list)
+    for ev in events:
+        url = ev["source_url"] if not isinstance(ev, dict) else ev.get("source_url")
+        st = ev["start_time"] if not isinstance(ev, dict) else ev.get("start_time")
+        hd = mtgo_holding_date(url, st)
+        if hd is None:
+            # Last resort: skip cannot name — treat as epoch so it still writes something
+            hd = date(1970, 1, 1)
+        groups[hd].append(ev)
+    out: dict[str, tuple[str, date, int, int]] = {}
+    for hd, group in groups.items():
+        group = sorted(group, key=lambda e: ((e["start_time"] or ""), str(e["id"])))
+        n = len(group)
+        for i, ev in enumerate(group, 1):
+            eid = str(ev["id"])
+            if n == 1:
+                out[eid] = (event_report_stem(hd, None), hd, 1, 1)
+            else:
+                out[eid] = (event_report_stem(hd, i), hd, i, n)
+    return out
 
 
 def today_jst(now: datetime | None = None) -> date:
@@ -904,8 +964,9 @@ def _common_report_notes(*, other_thr: float) -> list[str]:
         "プレイヤー名はプレーンテキスト（リンクなし）。"
         "特徴リストのリンク方針（MTGGoldfish 優先）は変更なし。"
         "Discord は大会ごとに1投稿（短い `[リスト](同URL)` を優先）。",
-        "日次ファイルは **1大会 = 1 Markdown**（同日複数は "
-        "`YYYY-MM-DD-1.md`, `YYYY-MM-DD-2.md` …）。"
+        "日次ファイルは **1大会 = 1 Markdown**。"
+        "ファイル名は **MTGO 開催日**（decklist URL の日付）`YYYY-MM-DD.md`。"
+        "同じ開催日に複数大会がある稀な場合のみ `-1` / `-2`。"
         "メタ概要（Top32）・Top8・特徴リストはその大会のみ。",
     ]
 
@@ -915,25 +976,19 @@ def build_report_data_for_event(
     ev: sqlite3.Row | dict[str, Any],
     *,
     report_date: date,
-    event_index: int,
-    events_on_day: int,
+    report_stem: str,
+    holding_date: date,
+    event_index: int = 1,
+    events_on_day: int = 1,
     now: datetime | None = None,
 ) -> DailyReportData:
     """Build a report scoped to **one** Challenge/Preliminary event."""
     notes: list[str] = []
-    if not isinstance(ev, sqlite3.Row):
-        # Allow plain dicts in tests / callers
-        class _Row(dict):
-            def __getitem__(self, key):  # type: ignore[no-untyped-def]
-                return dict.__getitem__(self, key)
-
-        ev_row = ev  # type: ignore[assignment]
-    else:
-        ev_row = ev
+    ev_row = ev
 
     summary = _event_summary(conn, ev_row, notes)  # type: ignore[arg-type]
     event_summaries = [summary]
-    # Meta Top32 / Top8 / distinctive: this event only (no same-day merge)
+    # Meta Top32 / Top8 / distinctive: this event only (no multi-event merge)
     meta = list(summary.top32)
     checksum_notes = meta_top32_checksum(event_summaries, meta)
     log_meta_checksum(checksum_notes)
@@ -973,8 +1028,8 @@ def build_report_data_for_event(
     notes.extend(_common_report_notes(other_thr=other_thr))
     if events_on_day > 1:
         notes.append(
-            f"同日（JST {report_date.isoformat()}）は大会が {events_on_day} 本。"
-            f"本ファイルはそのうち #{event_index}（開始順）。"
+            f"MTGO 開催日 {holding_date.isoformat()} に大会が {events_on_day} 本 "
+            f"（稀な衝突）。本ファイルは開始順 #{event_index}。"
         )
 
     distinctive = select_distinctive(
@@ -992,7 +1047,6 @@ def build_report_data_for_event(
             "大会ページまたは mtgo.com にフォールバックします（CF回避はしません）。"
         )
 
-    stem = event_report_stem(report_date, event_index)
     return DailyReportData(
         report_date=report_date.isoformat(),
         generated_at=(now or datetime.now(tz=JST)).astimezone(JST).isoformat(timespec="seconds"),
@@ -1002,7 +1056,8 @@ def build_report_data_for_event(
         week_dist=week_dist,
         distinctive=distinctive,
         notes=notes,
-        report_stem=stem,
+        report_stem=report_stem,
+        holding_date=holding_date.isoformat(),
         event_index=event_index,
         events_on_day=events_on_day,
     )
@@ -1052,16 +1107,17 @@ def build_report_data(
             distinctive=[],
             notes=["対象日の Challenge / Preliminary は見つかりませんでした（新規なし）。"],
             report_stem=rd.isoformat(),
+            holding_date="",
             event_index=0,
             events_on_day=0,
         )
 
+    stems = assign_holding_stems(list(events_rows))
     chosen: sqlite3.Row | None = None
-    idx = 1
     if event_id is not None:
-        for i, row in enumerate(events_rows, 1):
+        for row in events_rows:
             if str(row["id"]) == str(event_id):
-                chosen, idx = row, i
+                chosen = row
                 break
         if chosen is None:
             raise ValueError(f"event_id {event_id} not on JST day {rd.isoformat()}")
@@ -1072,17 +1128,18 @@ def build_report_data(
                 f"for {rd.isoformat()}"
             )
         chosen = events_rows[event_index - 1]
-        idx = event_index
     else:
         chosen = events_rows[0]
-        idx = 1
 
+    stem, hd, idx, group_n = stems[str(chosen["id"])]
     return build_report_data_for_event(
         conn,
         chosen,
         report_date=rd,
+        report_stem=stem,
+        holding_date=hd,
         event_index=idx,
-        events_on_day=len(events_rows),
+        events_on_day=group_n,
         now=now,
     )
 
@@ -1173,11 +1230,12 @@ def _render_cumul_table(rows: list[ArchCount], *, with_week_delta: bool = False)
 
 def render_markdown(data: DailyReportData) -> str:
     lines: list[str] = []
-    if data.event_index and data.events_on_day:
-        title_suffix = f"{data.report_date} #{data.event_index}/{data.events_on_day}"
+    holding = data.holding_date or data.report_stem or data.report_date
+    if data.events:
+        title = f"# {data.events[0].name} — {holding}（MTGO）"
     else:
-        title_suffix = data.report_date
-    lines.append(f"# Pauper 大会レポート — {title_suffix}（JST）")
+        title = f"# Pauper 大会レポート — {holding}（MTGO）"
+    lines.append(title)
     lines.append("")
     lines.append(f"生成: `{data.generated_at}`")
     if data.report_stem:
@@ -1194,7 +1252,7 @@ def render_markdown(data: DailyReportData) -> str:
         for ev in data.events:
             pc = ev.player_count if ev.player_count is not None else "?"
             lines.append(
-                f"- **{ev.name}** (`{ev.event_type}`) — 開始 `{ev.start_time}` / "
+                f"- **{ev.name}** (\"{holding}\") — 開始 `{ev.start_time}` / "
                 f"人数 {pc} / 公開デッキ {ev.deck_count} / [mtgo]({ev.source_url})"
             )
         lines.append("")
@@ -1265,22 +1323,25 @@ def render_markdown(data: DailyReportData) -> str:
     return "\n".join(lines)
 
 
-def _cleanup_legacy_day_reports(
-    report_date: date,
+def _cleanup_jst_index_reports(
+    jst_day: date,
     *,
     keep_stems: set[str],
     reports_dir: Path,
 ) -> list[Path]:
-    """Remove legacy combined ``YYYY-MM-DD.md`` and stale ``-N`` files for the day."""
+    """Remove obsolete **JST-index** files ``YYYY-MM-DD-N.md`` for ``jst_day``.
+
+    Does **not** delete bare ``YYYY-MM-DD.md`` (those are MTGO holding-date
+    files and may belong to other events).
+    """
     removed: list[Path] = []
-    day = report_date.isoformat()
-    legacy = reports_dir / f"{day}.md"
-    if legacy.exists() and day not in keep_stems:
-        legacy.unlink()
-        removed.append(legacy)
+    day = jst_day.isoformat()
     for path in sorted(reports_dir.glob(f"{day}-*.md")):
-        stem = path.stem
-        if stem not in keep_stems:
+        # Only numeric suffix leftovers from the old JST-index scheme
+        suffix = path.stem[len(day) + 1 :]
+        if not suffix.isdigit():
+            continue
+        if path.stem not in keep_stems:
             path.unlink()
             removed.append(path)
     return removed
@@ -1292,34 +1353,37 @@ def write_reports_for_day(
     reports_dir: Path | None = None,
     now: datetime | None = None,
 ) -> list[tuple[Path, DailyReportData]]:
-    """Write **one Markdown file per event** on the JST calendar day.
+    """Write **one Markdown file per event** whose **JST** start falls on ``report_date``.
 
-    Filename scheme: ``reports/daily/YYYY-MM-DD-<n>.md`` where ``<n>`` is the
-    1-based index of Challenge/Preliminary events that day, ordered by
-    ``start_time`` ascending. Empty days write nothing (and delete a leftover
-    combined ``YYYY-MM-DD.md`` if present).
+    Filename uses the **MTGO holding date** from the decklist URL
+    (``YYYY-MM-DD.md``). If two events share that holding date, disambiguate
+    with ``-1`` / ``-2`` (start_time order). Empty JST days write nothing.
     """
     ensure_dirs()
     rd = report_date or today_jst(now)
     out_dir = reports_dir or REPORTS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     events_rows = _events_for_report(conn, rd)
+    stems = assign_holding_stems(list(events_rows))
     written: list[tuple[Path, DailyReportData]] = []
     keep: set[str] = set()
-    for idx, ev in enumerate(events_rows, 1):
+    for ev in events_rows:
+        stem, hd, idx, group_n = stems[str(ev["id"])]
         data = build_report_data_for_event(
             conn,
             ev,
             report_date=rd,
+            report_stem=stem,
+            holding_date=hd,
             event_index=idx,
-            events_on_day=len(events_rows),
+            events_on_day=group_n,
             now=now,
         )
         path = out_dir / f"{data.report_stem}.md"
         path.write_text(render_markdown(data), encoding="utf-8")
         keep.add(data.report_stem)
         written.append((path, data))
-    _cleanup_legacy_day_reports(rd, keep_stems=keep, reports_dir=out_dir)
+    _cleanup_jst_index_reports(rd, keep_stems=keep, reports_dir=out_dir)
     return written
 
 
@@ -1328,7 +1392,7 @@ def write_report(
     report_date: date | None = None,
     reports_dir: Path | None = None,
 ) -> tuple[Path, DailyReportData]:
-    """Compatibility wrapper: write all per-event reports for the day.
+    """Compatibility wrapper: write all per-event reports for the JST day.
 
     Returns the first written report, or a synthetic empty-day path/data when
     there are no events (no file is created for empty days).
@@ -1338,9 +1402,8 @@ def write_report(
         return written[0]
     rd = report_date or today_jst()
     data = build_report_data(conn, report_date=rd)
-    # Empty day: no markdown file (Discord skips; avoid combined empty stubs).
     out_dir = reports_dir or REPORTS_DIR
-    _cleanup_legacy_day_reports(rd, keep_stems=set(), reports_dir=out_dir)
+    _cleanup_jst_index_reports(rd, keep_stems=set(), reports_dir=out_dir)
     return out_dir / f"{rd.isoformat()}.md", data
 
 
@@ -1348,6 +1411,7 @@ def list_event_report_stems_for_day(
     conn: sqlite3.Connection,
     report_date: date,
 ) -> list[str]:
-    """Return ``YYYY-MM-DD-<n>`` stems for every event on the JST day."""
+    """Return MTGO-holding-date stems for every event on the JST day."""
     rows = _events_for_report(conn, report_date)
-    return [event_report_stem(report_date, i) for i in range(1, len(rows) + 1)]
+    stems = assign_holding_stems(list(rows))
+    return [stems[str(r["id"])][0] for r in rows]

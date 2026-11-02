@@ -318,7 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--stem",
         type=str,
         default=None,
-        help="Per-event report stem YYYY-MM-DD-N (preferred for daily Discord)",
+        help="Per-event report stem: MTGO holding date YYYY-MM-DD (or YYYY-MM-DD-N on collision)",
     )
     s.add_argument(
         "--event-index",

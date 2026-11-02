@@ -19,7 +19,7 @@ Magic Online の **Pauper Challenge** と **Preliminary** を毎日取得し、�
 
 Cron は UTC **00:00** と **01:00** の両方に置く（Actions の ~4.5–5h 遅延を見込んだ前倒し）。`America/New_York` の夏時間判定で正しい枠だけ実行します。
 
-Discord には **大会ごとに1投稿**の短い要約を送ります。表つきの全文は GitHub の `reports/daily/YYYY-MM-DD-<n>.md` を開いてください（同日2大会なら `-1` / `-2`）。
+Discord には **大会ごとに1投稿**の短い要約を送ります。表つきの全文は GitHub の `reports/daily/YYYY-MM-DD.md`（MTGO 開催日）を開いてください。同じ開催日に稀に複数大会があるときだけ `-1` / `-2`。
 
 ---
 
@@ -40,7 +40,7 @@ Secret が無い間も集計は動きますが、Discord 投稿はスキップ�
 
 - **Top8 ブラケット**: 優勝〜Top8・プレイヤー＋アーキ＋敗因  
 - **メタ概要**: **その大会の** Top32（数 / Top8 / シェア / W-L / 勝率）。同日の他大会と合算しない  
-- **ファイル**: 1大会 = 1 Markdown（`YYYY-MM-DD-1.md`, `YYYY-MM-DD-2.md` …。開始時刻順）  
+- **ファイル**: 1大会 = 1 Markdown（`YYYY-MM-DD.md` = MTGO decklist URL の開催日。衝突時のみ `-1` / `-2`）  
 - **累積**: 過去1ヵ月／直近1週間。シェア≤2% は Other。直近週に前週差  
 - **特徴リスト**: Top16 から 3〜5 本。直近2週間の同アーキ平均との差分（メイン／サイド）  
 - アーキ改名: `config/aliases.csv` / 個別: `config/overrides.csv` → `apply-overrides`  
@@ -73,7 +73,7 @@ python -m pauper_meta run-daily
 出力:
 
 - DB: `data/pauper.sqlite`（Git に残す）  
-- レポート: `reports/daily/YYYY-MM-DD-<n>.md`（Git に残す。1大会1ファイル）  
+- レポート: `reports/daily/YYYY-MM-DD.md`（Git に残す。1大会1ファイル・MTGO 開催日）  
 - 生HTML/JSON: `data/raw/`（**Git に入れない**）  
 - ログ: `logs/`
 
