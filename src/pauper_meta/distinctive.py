@@ -364,4 +364,7 @@ def select_distinctive(
             if len(selected) >= min_count:
                 break
 
-    return selected[:max_count]
+    # Display order: final finish rank ascending (1st before 8th), then player.
+    selected = selected[:max_count]
+    selected.sort(key=lambda x: (x.finish_rank if x.finish_rank is not None else 99, x.player))
+    return selected

@@ -19,15 +19,23 @@ from .distinctive import (
     load_distinctive_config,
     select_distinctive,
 )
-from .goldfish_links import get_resolver
+from .goldfish_links import event_page_url, get_resolver
 from .parse_mtgo import mtgo_player_deck_url
-from .paths import CONFIG_DIR, REPORTS_DIR, ensure_dirs
+from .paths import CONFIG_DIR, PROJECT_ROOT, REPORTS_DIR, ensure_dirs
 
 JST = ZoneInfo("Asia/Tokyo")
 
 DEFAULT_REPORT_CONFIG = {
     "other_share_threshold": 0.02,
+    # Prior-window deck count below this → month/week delta noise note
+    "delta_sparse_deck_threshold": 64,
 }
+
+# Shared boilerplate lives outside per-event daily files.
+REPORT_NOTES_REL = "reports/meta/report-notes.md"
+REPORT_NOTES_PATH = PROJECT_ROOT / REPORT_NOTES_REL
+# Relative link from reports/daily/*.md → reports/meta/report-notes.md
+REPORT_NOTES_FROM_DAILY = "../meta/report-notes.md"
 
 
 def load_report_config(path: Path | None = None) -> dict:
@@ -39,6 +47,8 @@ def load_report_config(path: Path | None = None) -> dict:
             data = json.loads(cfg_path.read_text(encoding="utf-8"))
             if "other_share_threshold" in data:
                 out["other_share_threshold"] = float(data["other_share_threshold"])
+            if "delta_sparse_deck_threshold" in data:
+                out["delta_sparse_deck_threshold"] = int(data["delta_sparse_deck_threshold"])
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             pass
     return out
@@ -54,7 +64,8 @@ class ArchCount:
     match_losses: int = 0
     winrate: float | None = None  # W / (W+L), None if no matches
     top8_count: int = 0  # finish_rank <= 8 within cohort
-    share_delta: float | None = None  # week share − prior week share (raw)
+    share_delta: float | None = None  # share − prior-window share (raw)
+    winrate_delta: float | None = None  # winrate − prior-window winrate (raw)
 
 
 @dataclass
@@ -92,6 +103,8 @@ class EventSummary:
     top32: list[ArchCount] = field(default_factory=list)
     top8_bracket: list[Top8Entry] = field(default_factory=list)
     bracket_matches: list[BracketMatchLine] = field(default_factory=list)
+    # Best-effort MTGGoldfish tournament page (None if pattern not applicable)
+    goldfish_url: str | None = None
 
 
 @dataclass
@@ -108,10 +121,13 @@ class DailyReportData:
     generated_at: str
     events: list[EventSummary]  # exactly one event for per-event reports; empty if none
     meta_overview: list[ArchCount]
-    month_dist: list[ArchCount]  # ~30d Top32 aggregate (Other-bucketed)
+    month_dist: list[ArchCount]  # ~30d Top32 aggregate (Other-bucketed + 前月差)
     week_dist: list[ArchCount]  # last 7d Top32 aggregate (Other-bucketed + 前週差)
     distinctive: list[DistinctiveFlag]
     notes: list[str] = field(default_factory=list)
+    # Shown under cumul tables when prior window is thin (not the old ## 注記 dump)
+    month_delta_note: str = ""
+    week_delta_note: str = ""
     # Per-event file identity: reports/daily/{report_stem}.md
     # Scheme: MTGO holding date ``YYYY-MM-DD`` (from decklist URL/slug).
     # Collision on the same holding date → ``YYYY-MM-DD-1``, ``-2`` (start_time order).
@@ -587,24 +603,42 @@ def _bucket_other(rows: list[ArchCount], threshold: float) -> list[ArchCount]:
     return out
 
 
-def _with_share_deltas(
+def _with_period_deltas(
     current: list[ArchCount],
     previous_raw: list[ArchCount],
     *,
     threshold: float,
 ) -> list[ArchCount]:
-    """Attach share_delta: named arches use prior raw share; Other uses prior bucketed Other."""
-    prev_raw = {a.archetype: a.share for a in previous_raw}
+    """Attach share_delta + winrate_delta vs prior raw window.
+
+    Named arches use prior raw share/winrate; Other uses prior bucketed Other.
+    """
+    prev_raw_share = {a.archetype: a.share for a in previous_raw}
+    prev_raw_wr = {a.archetype: a.winrate for a in previous_raw}
     prev_bucketed = _bucket_other(previous_raw, threshold)
-    prev_other = next((a.share for a in prev_bucketed if a.archetype == "Other"), None)
+    prev_other = next((a for a in prev_bucketed if a.archetype == "Other"), None)
     out: list[ArchCount] = []
     for a in current:
         if a.archetype == "Other":
-            delta = None if prev_other is None else round(a.share - prev_other, 4)
-        elif a.archetype in prev_raw:
-            delta = round(a.share - prev_raw[a.archetype], 4)
+            if prev_other is None:
+                share_delta = None
+                winrate_delta = None
+            else:
+                share_delta = round(a.share - prev_other.share, 4)
+                if a.winrate is None or prev_other.winrate is None:
+                    winrate_delta = None
+                else:
+                    winrate_delta = round(a.winrate - prev_other.winrate, 4)
+        elif a.archetype in prev_raw_share:
+            share_delta = round(a.share - prev_raw_share[a.archetype], 4)
+            prev_wr = prev_raw_wr.get(a.archetype)
+            if a.winrate is None or prev_wr is None:
+                winrate_delta = None
+            else:
+                winrate_delta = round(a.winrate - prev_wr, 4)
         else:
-            delta = None
+            share_delta = None
+            winrate_delta = None
         out.append(
             ArchCount(
                 archetype=a.archetype,
@@ -614,19 +648,49 @@ def _with_share_deltas(
                 match_losses=a.match_losses,
                 winrate=a.winrate,
                 top8_count=a.top8_count,
-                share_delta=delta,
+                share_delta=share_delta,
+                winrate_delta=winrate_delta,
             )
         )
     return out
 
 
-def _fmt_share_delta(delta: float | None) -> str:
+# Back-compat alias
+_with_share_deltas = _with_period_deltas
+
+
+def _fmt_pct_delta(delta: float | None) -> str:
+    """Format share/winrate delta: None→—, ~0→-, else ±N%."""
     if delta is None:
         return "—"
     pct = int(round(delta * 100))
     if pct == 0:
         return "-"
     return f"+{pct}%" if pct > 0 else f"{pct}%"
+
+
+_fmt_share_delta = _fmt_pct_delta
+
+
+def _window_deck_count(rows: list[ArchCount]) -> int:
+    return sum(a.count for a in rows)
+
+
+def _sparse_delta_note(
+    *,
+    label: str,
+    prior_raw: list[ArchCount],
+    threshold: int,
+) -> str:
+    n = _window_deck_count(prior_raw)
+    if not prior_raw:
+        return f"※{label}の比較元データなし（差は —）。"
+    if n < threshold:
+        return (
+            f"※{label}の比較元 Top32 合算が {n} 本（目安 {threshold} 未満）のため、"
+            f"差はノイズが大きくなり得ます。"
+        )
+    return ""
 
 
 def _eliminators(conn: sqlite3.Connection, event_id: str) -> dict[str, str]:
@@ -919,7 +983,13 @@ def _load_deck_payloads(conn: sqlite3.Connection, event_ids: list[str]) -> list[
     return out
 
 
-def _event_summary(conn: sqlite3.Connection, ev: sqlite3.Row, notes: list[str]) -> EventSummary:
+def _event_summary(
+    conn: sqlite3.Connection,
+    ev: sqlite3.Row,
+    notes: list[str],
+    *,
+    holding_date: date | None = None,
+) -> EventSummary:
     from .overrides import recompute_top8_dist_for_event
 
     n_fix = backfill_finish_ranks_from_brackets(conn, ev["id"])
@@ -932,6 +1002,13 @@ def _event_summary(conn: sqlite3.Connection, ev: sqlite3.Row, notes: list[str]) 
     ).fetchone()["c"]
     top32_decks = _top32_deck_rows(conn, ev["id"])
     top32 = _arch_strength_from_decks(conn, top32_decks)
+    hd = holding_date or mtgo_holding_date(ev["source_url"], ev["start_time"])
+    gf = event_page_url(
+        ev["name"] or "",
+        holding_date=hd.isoformat() if hd else None,
+        start_time=ev["start_time"] or "",
+        require_cached=False,
+    )
     return EventSummary(
         event_id=ev["id"],
         name=ev["name"],
@@ -943,31 +1020,18 @@ def _event_summary(conn: sqlite3.Connection, ev: sqlite3.Row, notes: list[str]) 
         top32=top32,
         top8_bracket=_top8_bracket(conn, ev["id"]),
         bracket_matches=_bracket_matches(conn, ev["id"]),
+        goldfish_url=gf,
     )
 
 
 def _common_report_notes(*, other_thr: float) -> list[str]:
+    """Legacy helper — shared text now lives in ``reports/meta/report-notes.md``.
+
+    Kept for callers/tests that still expect a list; content is a short pointer.
+    """
+    thr_pct = f"{other_thr:.0%}"
     return [
-        "特徴リストの同アーキ比較は直近約2週間の**メイン／サイド別**平均"
-        "（不足時さらに拡張。スコアはメイン主＋サイド0.55倍）。"
-        "比較基準は `直近2週間の同アーキ N本`（メイン比較に使った本数）。",
-        "**W-L / 勝率**はマッチ単位（ゲームではない）。"
-        "スイス順位表の W-L に Top8 シングルエリムのブラケット勝敗を合算。"
-        "勝率 = W / (W+L)。**Top8** 列は当該アーキの finish_rank≤8 本数。",
-        "累積分布（1ヵ月／1週間）は各イベントの **Top32** デッキ合算。"
-        f"シェア≤{other_thr:.0%} は **Other** に合算（`config/report.json`）。"
-        "直近1週間の**前週差**はシェア差（前週に無いアーキは —）。",
-        "未分類デッキはアーキ名の代わりに **色アイデンティティ**"
-        "（W/U/B/R/G、複数色は WUBRG 順、無色は C）を表示。",
-        "Top8 の**アーキタイプ名のみ**を **mtgo.com の個別デッキアンカー**"
-        "（`#deck_<player>`、空白は `_`）へリンク。"
-        "プレイヤー名はプレーンテキスト（リンクなし）。"
-        "特徴リストのリンク方針（MTGGoldfish 優先）は変更なし。"
-        "Discord は大会ごとに1投稿（短い `[リスト](同URL)` を優先）。",
-        "日次ファイルは **1大会 = 1 Markdown**。"
-        "ファイル名は **MTGO 開催日**（decklist URL の日付）`YYYY-MM-DD.md`。"
-        "同じ開催日に複数大会がある稀な場合のみ `-1` / `-2`。"
-        "メタ概要（Top32）・Top8・特徴リストはその大会のみ。",
+        f"共通の注記・対象は `{REPORT_NOTES_REL}` を参照（Other 閾値 {thr_pct}）。",
     ]
 
 
@@ -986,30 +1050,49 @@ def build_report_data_for_event(
     notes: list[str] = []
     ev_row = ev
 
-    summary = _event_summary(conn, ev_row, notes)  # type: ignore[arg-type]
+    summary = _event_summary(conn, ev_row, notes, holding_date=holding_date)  # type: ignore[arg-type]
     event_summaries = [summary]
     # Meta Top32 / Top8 / distinctive: this event only (no multi-event merge)
     meta = list(summary.top32)
     checksum_notes = meta_top32_checksum(event_summaries, meta)
     log_meta_checksum(checksum_notes)
+    # Keep checksum / backfill diagnostics in structured data only (not rendered).
     notes.extend(checksum_notes)
 
     as_of = _parse_event_date(summary.start_time) or report_date
     month_start = as_of - timedelta(days=29)
+    prev_month_end = month_start - timedelta(days=1)
+    prev_month_start = prev_month_end - timedelta(days=29)
     week_start = as_of - timedelta(days=6)
     prev_week_end = week_start - timedelta(days=1)
     prev_week_start = prev_week_end - timedelta(days=6)
 
     report_cfg = load_report_config()
     other_thr = float(report_cfg["other_share_threshold"])
+    sparse_thr = int(report_cfg["delta_sparse_deck_threshold"])
     month_raw = _top32_strength_window(conn, month_start, as_of)
+    prev_month_raw = _top32_strength_window(conn, prev_month_start, prev_month_end)
     week_raw = _top32_strength_window(conn, week_start, as_of)
     prev_week_raw = _top32_strength_window(conn, prev_week_start, prev_week_end)
-    month_dist = _bucket_other(month_raw, other_thr)
-    week_dist = _with_share_deltas(
+    month_dist = _with_period_deltas(
+        _bucket_other(month_raw, other_thr),
+        prev_month_raw,
+        threshold=other_thr,
+    )
+    week_dist = _with_period_deltas(
         _bucket_other(week_raw, other_thr),
         prev_week_raw,
         threshold=other_thr,
+    )
+    month_delta_note = _sparse_delta_note(
+        label="前月窓（直前約30日）",
+        prior_raw=prev_month_raw,
+        threshold=sparse_thr,
+    )
+    week_delta_note = _sparse_delta_note(
+        label="前週窓",
+        prior_raw=prev_week_raw,
+        threshold=max(32, sparse_thr // 2),
     )
 
     cfg = load_distinctive_config()
@@ -1025,7 +1108,7 @@ def build_report_data_for_event(
         min_lists=int(cfg["min_archetype_lists"]),
         display_fn=_display_row,
     )
-    notes.extend(_common_report_notes(other_thr=other_thr))
+    # Boilerplate notes live in reports/meta/; keep only rare per-file diagnostics here.
     if events_on_day > 1:
         notes.append(
             f"MTGO 開催日 {holding_date.isoformat()} に大会が {events_on_day} 本 "
@@ -1056,6 +1139,8 @@ def build_report_data_for_event(
         week_dist=week_dist,
         distinctive=distinctive,
         notes=notes,
+        month_delta_note=month_delta_note,
+        week_delta_note=week_delta_note,
         report_stem=report_stem,
         holding_date=holding_date.isoformat(),
         event_index=event_index,
@@ -1082,17 +1167,26 @@ def build_report_data(
     if not events_rows:
         report_cfg = load_report_config()
         other_thr = float(report_cfg["other_share_threshold"])
+        sparse_thr = int(report_cfg["delta_sparse_deck_threshold"])
         as_of = rd
         month_start = as_of - timedelta(days=29)
+        prev_month_end = month_start - timedelta(days=1)
+        prev_month_start = prev_month_end - timedelta(days=29)
         week_start = as_of - timedelta(days=6)
         prev_week_end = week_start - timedelta(days=1)
         prev_week_start = prev_week_end - timedelta(days=6)
-        month_dist = _bucket_other(
-            _top32_strength_window(conn, month_start, as_of), other_thr
+        month_raw = _top32_strength_window(conn, month_start, as_of)
+        prev_month_raw = _top32_strength_window(conn, prev_month_start, prev_month_end)
+        week_raw = _top32_strength_window(conn, week_start, as_of)
+        prev_week_raw = _top32_strength_window(conn, prev_week_start, prev_week_end)
+        month_dist = _with_period_deltas(
+            _bucket_other(month_raw, other_thr),
+            prev_month_raw,
+            threshold=other_thr,
         )
-        week_dist = _with_share_deltas(
-            _bucket_other(_top32_strength_window(conn, week_start, as_of), other_thr),
-            _top32_strength_window(conn, prev_week_start, prev_week_end),
+        week_dist = _with_period_deltas(
+            _bucket_other(week_raw, other_thr),
+            prev_week_raw,
             threshold=other_thr,
         )
         return DailyReportData(
@@ -1106,6 +1200,16 @@ def build_report_data(
             week_dist=week_dist,
             distinctive=[],
             notes=["対象日の Challenge / Preliminary は見つかりませんでした（新規なし）。"],
+            month_delta_note=_sparse_delta_note(
+                label="前月窓（直前約30日）",
+                prior_raw=prev_month_raw,
+                threshold=sparse_thr,
+            ),
+            week_delta_note=_sparse_delta_note(
+                label="前週窓",
+                prior_raw=prev_week_raw,
+                threshold=max(32, sparse_thr // 2),
+            ),
             report_stem=rd.isoformat(),
             holding_date="",
             event_index=0,
@@ -1203,18 +1307,25 @@ def _render_meta_table(rows: list[ArchCount]) -> list[str]:
     return lines
 
 
-def _render_cumul_table(rows: list[ArchCount], *, with_week_delta: bool = False) -> list[str]:
-    if with_week_delta:
+def _render_cumul_table(
+    rows: list[ArchCount],
+    *,
+    share_delta_header: str | None = None,
+    winrate_delta_header: str | None = None,
+) -> list[str]:
+    """Render cumulative arch table. Pass delta headers to include delta columns."""
+    if share_delta_header and winrate_delta_header:
         lines = [
-            "| アーキタイプ | 数 | シェア | 前週差 | W-L | 勝率 |",
-            "|---|---:|---:|---:|---:|---:|",
+            f"| アーキタイプ | 数 | シェア | {share_delta_header} | W-L | 勝率 | {winrate_delta_header} |",
+            "|---|---:|---:|---:|---:|---:|---:|",
         ]
         for a in rows:
             wl = f"{a.match_wins}-{a.match_losses}"
             wr = f"{a.winrate:.0%}" if a.winrate is not None else "—"
             lines.append(
                 f"| {a.archetype} | {a.count} | {a.share:.0%} | "
-                f"{_fmt_share_delta(a.share_delta)} | {wl} | {wr} |"
+                f"{_fmt_pct_delta(a.share_delta)} | {wl} | {wr} | "
+                f"{_fmt_pct_delta(a.winrate_delta)} |"
             )
         return lines
     lines = [
@@ -1241,8 +1352,6 @@ def render_markdown(data: DailyReportData) -> str:
     if data.report_stem:
         lines.append(f"ファイル: `{data.report_stem}.md`")
     lines.append("")
-    lines.append("対象: **単一**の Pauper Challenge / Preliminary（League 除外）")
-    lines.append("")
 
     lines.append("## イベント概要")
     if not data.events:
@@ -1251,9 +1360,12 @@ def render_markdown(data: DailyReportData) -> str:
     else:
         for ev in data.events:
             pc = ev.player_count if ev.player_count is not None else "?"
+            link_bits = [f"[mtgo]({ev.source_url})"]
+            if ev.goldfish_url:
+                link_bits.append(f"[MTGGoldfish]({ev.goldfish_url})")
             lines.append(
                 f"- **{ev.name}** (\"{holding}\") — 開始 `{ev.start_time}` / "
-                f"人数 {pc} / 公開デッキ {ev.deck_count} / [mtgo]({ev.source_url})"
+                f"人数 {pc} / 公開デッキ {ev.deck_count} / {' / '.join(link_bits)}"
             )
         lines.append("")
 
@@ -1283,14 +1395,32 @@ def render_markdown(data: DailyReportData) -> str:
     if not data.month_dist:
         lines.append("データなし。")
     else:
-        lines.extend(_render_cumul_table(data.month_dist))
+        lines.extend(
+            _render_cumul_table(
+                data.month_dist,
+                share_delta_header="シェア前月差",
+                winrate_delta_header="勝率前月差",
+            )
+        )
+        if data.month_delta_note:
+            lines.append("")
+            lines.append(data.month_delta_note)
     lines.append("")
 
     lines.append("## 直近1週間累積のアーキタイプ分布")
     if not data.week_dist:
         lines.append("データなし。")
     else:
-        lines.extend(_render_cumul_table(data.week_dist, with_week_delta=True))
+        lines.extend(
+            _render_cumul_table(
+                data.week_dist,
+                share_delta_header="シェア前週差",
+                winrate_delta_header="勝率前週差",
+            )
+        )
+        if data.week_delta_note:
+            lines.append("")
+            lines.append(data.week_delta_note)
     lines.append("")
 
     lines.append("## 特徴リスト（Top16 のみ・3〜5本）")
@@ -1309,16 +1439,25 @@ def render_markdown(data: DailyReportData) -> str:
                 lines.append(f"- リンク: [{label}]({d.deck_url})")
             if d.baseline_note:
                 lines.append(f"- 比較基準: {d.baseline_note}")
+                # Blank line so **メイン** is not absorbed into the list item.
+                lines.append("")
             lines.extend(_render_diff_table(d))
 
     lines.append("---")
     lines.append("")
-    lines.append("## 注記")
-    for n in data.notes:
-        lines.append(f"- {n}")
     lines.append(
-        "- Phase 1 — ローカル生成。常連プレイヤー集計は DB / `player-stats` CLI のみ（日次レポート非掲載）。"
+        f"共通の注記・対象: [`{REPORT_NOTES_REL}`]({REPORT_NOTES_FROM_DAILY})"
     )
+    # Rare per-file diagnostics only (collision / goldfish fallback) — not the old boilerplate.
+    rare = [
+        n
+        for n in data.notes
+        if n.startswith("MTGO 開催日") or n.startswith("特徴リストのリンクは")
+    ]
+    if rare:
+        lines.append("")
+        for n in rare:
+            lines.append(f"- {n}")
     lines.append("")
     return "\n".join(lines)
 

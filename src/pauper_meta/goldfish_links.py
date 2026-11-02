@@ -56,6 +56,60 @@ def tournament_url(event_name: str, event_date: str) -> str | None:
     return f"{GF_BASE}/tournament/{slug}"
 
 
+# Slugs we are willing to publish without a live HEAD / cache check.
+# Preliminary often 404s under the naive ``pauper-preliminary-YYYY-MM-DD`` slug
+# (Goldfish naming/indexing differs) — those need a cache hit, never a guess.
+_SAFE_EVENT_SLUG_PREFIX = re.compile(r"^pauper-challenge-\d+$", re.I)
+
+
+def event_page_url(
+    event_name: str,
+    *,
+    holding_date: str | None = None,
+    start_time: str | None = None,
+    require_cached: bool = False,
+    cache_dir: Path | None = None,
+) -> str | None:
+    """Best-effort MTGGoldfish **tournament** page for an event overview link.
+
+    Prefers ``holding_date`` (MTGO decklist URL date), then the UTC calendar
+    date of ``start_time``. Builds ``{sanitized-name}-{YYYY-MM-DD}`` only.
+
+    Publishing policy (avoid broken links):
+    - Challenge / Preliminary names matching the known Goldfish slug shape are
+      returned without HTTP check (pattern verified for Challenge 16/32).
+    - Any other event name requires a non-trivial cached tournament HTML
+      (``require_cached`` is forced).
+    - Never appends MTGO event ids to the slug.
+    """
+    dates: list[str] = []
+    if holding_date:
+        d = str(holding_date).strip()[:10]
+        if len(d) == 10:
+            dates.append(d)
+    if start_time:
+        d = str(start_time).strip()[:10]
+        if len(d) == 10 and d not in dates:
+            dates.append(d)
+    ensure_dirs()
+    cdir = cache_dir or (DATA_DIR / "raw" / "goldfish")
+    for d in dates:
+        url = tournament_url(event_name, d)
+        slug = tournament_slug(event_name, d)
+        if not url or not slug:
+            continue
+        # slug is like pauper-challenge-32-2026-11-01
+        name_part = slug[: -(len(d) + 1)] if slug.endswith(f"-{d}") else slug
+        safe = bool(_SAFE_EVENT_SLUG_PREFIX.match(name_part))
+        need_cache = require_cached or not safe
+        if need_cache:
+            path = cdir / f"tournament-{slug}.html"
+            if not (path.exists() and path.stat().st_size > 5_000):
+                continue
+        return url
+    return None
+
+
 class GoldfishLinkResolver:
     """Cache tournament HTML and resolve player → deck URLs."""
 
