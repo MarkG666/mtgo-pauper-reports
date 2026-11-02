@@ -6,7 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pauper_meta.discord_summary import build_ingest_failure_alert
+import os
+from unittest.mock import patch
+
+from pauper_meta.discord_summary import (
+    build_ingest_failure_alert,
+    post_ingest_failure_alert,
+    resolve_alert_webhook_url,
+)
 from pauper_meta.ingest_pending import (
     clear_pending,
     load_pending,
@@ -55,6 +62,19 @@ class IngestPendingTests(unittest.TestCase):
         self.assertIn("12857391", text)
         self.assertIn("ingest 失敗", text)
         self.assertIsNone(build_ingest_failure_alert([]))
+
+    def test_alert_webhook_never_falls_back_to_group(self) -> None:
+        env = {
+            "DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/group/xxx",
+            # alert secret intentionally absent
+        }
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("DISCORD_ALERT_WEBHOOK_URL", None)
+            self.assertIsNone(resolve_alert_webhook_url())
+            sent = post_ingest_failure_alert(
+                [{"event_id": "1", "slug": "x", "error": "boom"}]
+            )
+            self.assertFalse(sent)
 
 
 if __name__ == "__main__":

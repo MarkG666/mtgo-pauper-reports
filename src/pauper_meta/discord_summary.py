@@ -317,9 +317,22 @@ def post_discord_webhook(content: str, webhook_url: str, *, username: str = "Pau
 
 
 def resolve_webhook_url(explicit: str | None = None) -> str | None:
+    """Group / public daily+weekly webhook (``DISCORD_WEBHOOK_URL``)."""
     if explicit and explicit.strip():
         return explicit.strip()
     env = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+    return env or None
+
+
+def resolve_alert_webhook_url(explicit: str | None = None) -> str | None:
+    """Personal ops webhook for ingest failures only.
+
+    Uses ``DISCORD_ALERT_WEBHOOK_URL``. **Never** falls back to the group
+    ``DISCORD_WEBHOOK_URL`` — missing secret means skip the alert quietly.
+    """
+    if explicit and explicit.strip():
+        return explicit.strip()
+    env = os.environ.get("DISCORD_ALERT_WEBHOOK_URL", "").strip()
     return env or None
 
 
@@ -383,13 +396,20 @@ def post_ingest_failure_alert(
     webhook_url: str | None = None,
     as_of: date | None = None,
 ) -> bool:
-    """POST failure summary if any. Returns True when a message was sent."""
+    """POST failure summary to the **personal** alert webhook if configured.
+
+    Requires ``DISCORD_ALERT_WEBHOOK_URL`` (or ``webhook_url``). Does **not**
+    use the group ``DISCORD_WEBHOOK_URL``. Returns True when a message was sent.
+    """
     text = build_ingest_failure_alert(failures, as_of=as_of)
     if not text:
         return False
-    url = resolve_webhook_url(webhook_url)
+    url = resolve_alert_webhook_url(webhook_url)
     if not url:
-        log.warning("DISCORD_WEBHOOK_URL not set; skipping ingest failure alert")
+        log.warning(
+            "DISCORD_ALERT_WEBHOOK_URL not set — skipping ingest failure alert "
+            "(group DISCORD_WEBHOOK_URL is never used for alerts)"
+        )
         return False
     post_discord_webhook(text, url, username="Pauper Meta Alerts")
     log.info("posted ingest failure alert (%s failures, %s chars)", len(failures), len(text))

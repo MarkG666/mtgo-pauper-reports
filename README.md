@@ -28,7 +28,8 @@ Discord には **大会ごとに1投稿**の短い要約を送ります。表つ
 [SETUP.md](./SETUP.md) を上から順に:
 
 1. Discord Webhook 作成  
-2. GitHub Secret `DISCORD_WEBHOOK_URL` 登録  
+2. GitHub Secret `DISCORD_WEBHOOK_URL` 登録（日次・週次）。任意で個人用 `DISCORD_ALERT_WEBHOOK_URL`（取得失敗アラートのみ）  
+
 3. Actions で **Pauper daily** を一度手動実行  
 
 Secret が無い間も集計は動きますが、Discord 投稿はスキップされます。

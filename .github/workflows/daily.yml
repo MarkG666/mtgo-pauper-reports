@@ -115,6 +115,8 @@ jobs:
         if: steps.mode.outputs.run_daily == '1'
         env:
           PYTHONPATH: src
+          # Personal ops channel only — never fall back to group DISCORD_WEBHOOK_URL
+          DISCORD_ALERT_WEBHOOK_URL: ${{ secrets.DISCORD_ALERT_WEBHOOK_URL }}
         run: python -m pauper_meta run-daily
 
       # Lookback HTML flakes (old events) make run-daily exit 2 AFTER writing today's
