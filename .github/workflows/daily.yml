@@ -136,7 +136,7 @@ jobs:
             echo "Pushed DB + reports"
           fi
 
-      - name: Discord daily summary (today + recent unposted; deduped)
+      - name: Discord daily summary (per-event; recent unposted; deduped)
         if: >-
           always() &&
           steps.mode.outputs.run_daily == '1' &&
@@ -146,29 +146,31 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          # today, yesterday, and day-before (covers evening Challenges that land
-          # after the 13:00 JST post, and one delayed catch-up window)
-          mapfile -t DATES < <(python -c "
-          from datetime import timedelta
-          from pauper_meta.report_daily import today_jst
-          t = today_jst()
-          for i in range(3):
-              print((t - timedelta(days=i)).isoformat())
+          # One Discord post per event report stem (YYYY-MM-DD-N) for today,
+          # yesterday, and day-before (evening Challenges + catch-up window).
+          mapfile -t STEMS < <(python -c "
+          from pauper_meta.discord_summary import recent_daily_stems
+          for s in recent_daily_stems(days=3):
+              print(s)
           ")
+          if [ "${#STEMS[@]}" -eq 0 ]; then
+            echo "No recent event report stems to post"
+            exit 0
+          fi
           post_one() {
-            local DATE="$1"
-            local OUT="/tmp/discord-daily-$DATE.txt"
+            local STEM="$1"
+            local OUT="/tmp/discord-daily-$STEM.txt"
             if [ -z "$DISCORD_WEBHOOK_URL" ]; then
-              echo "::warning::DISCORD_WEBHOOK_URL secret is not set — skipping Discord post for $DATE"
-              python -m pauper_meta discord-summary --mode daily --date "$DATE" --out "$OUT"
+              echo "::warning::DISCORD_WEBHOOK_URL secret is not set — skipping Discord post for $STEM"
+              python -m pauper_meta discord-summary --mode daily --stem "$STEM" --out "$OUT"
             else
-              python -m pauper_meta discord-summary --mode daily --date "$DATE" --post --out "$OUT"
+              python -m pauper_meta discord-summary --mode daily --stem "$STEM" --post --out "$OUT"
             fi
-            echo "----- daily summary $DATE -----"
+            echo "----- daily summary $STEM -----"
             cat "$OUT"
           }
-          for DATE in "${DATES[@]}"; do
-            post_one "$DATE"
+          for STEM in "${STEMS[@]}"; do
+            post_one "$STEM"
           done
 
       - name: Discord weekly digest

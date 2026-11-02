@@ -154,6 +154,19 @@ def ingest_event_html(
     return parsed.event_id
 
 
+def _merge_listing_events(primary: list, extras: list) -> list:
+    """Dedupe listing events by slug; keep primary order then append new."""
+    seen: set[str] = set()
+    out: list = []
+    for le in list(primary) + list(extras):
+        slug = getattr(le, "slug", None) or ""
+        if not slug or slug in seen:
+            continue
+        seen.add(slug)
+        out.append(le)
+    return out
+
+
 def run_ingest(
     *,
     max_events: int | None = None,
@@ -170,10 +183,28 @@ def run_ingest(
     if offline_listing:
         html = offline_listing.read_text(encoding="utf-8", errors="replace")
         listing_path = offline_listing
+        events = extract_listing_events(html)
     else:
+        # Main Pauper filter page often shows only the newest month (sometimes
+        # a single event). Also pull current + previous monthly listings so
+        # lookback still covers last weekend when the landing page is thin.
         html, listing_path = fetcher.fetch_listing(use_cache=False)
+        events = extract_listing_events(html)
+        from datetime import date as _date
 
-    events = extract_listing_events(html)
+        today = _date.today()
+        months = [(today.year, today.month)]
+        if today.month == 1:
+            months.append((today.year - 1, 12))
+        else:
+            months.append((today.year, today.month - 1))
+        for year, month in months:
+            try:
+                mhtml, _mp = fetcher.fetch_monthly_listing(year, month, use_cache=False)
+                events = _merge_listing_events(events, extract_listing_events(mhtml))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("monthly listing %04d-%02d failed: %s", year, month, exc)
+
     if lookback:
         events = events[:lookback]
     if max_events is not None:

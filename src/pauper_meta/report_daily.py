@@ -104,17 +104,40 @@ class TrendDelta:
 
 @dataclass
 class DailyReportData:
-    report_date: str
+    report_date: str  # JST calendar date (YYYY-MM-DD)
     generated_at: str
-    events: list[EventSummary]
+    events: list[EventSummary]  # exactly one event for per-event reports; empty if none
     meta_overview: list[ArchCount]
     month_dist: list[ArchCount]  # ~30d Top32 aggregate (Other-bucketed)
     week_dist: list[ArchCount]  # last 7d Top32 aggregate (Other-bucketed + 前週差)
     distinctive: list[DistinctiveFlag]
     notes: list[str] = field(default_factory=list)
+    # Per-event file identity: reports/daily/{report_stem}.md
+    # Scheme: YYYY-MM-DD-<n> (n = 1-based index by start_time on that JST day).
+    report_stem: str = ""
+    event_index: int = 0  # 1-based; 0 when empty
+    events_on_day: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def event_report_stem(report_date: date | str, event_index: int) -> str:
+    """Filename stem for one event report: ``YYYY-MM-DD-<n>`` (n starts at 1)."""
+    day = report_date if isinstance(report_date, str) else report_date.isoformat()
+    if event_index < 1:
+        raise ValueError(f"event_index must be >= 1, got {event_index}")
+    return f"{day}-{event_index}"
+
+
+def event_report_path(
+    report_date: date | str,
+    event_index: int,
+    *,
+    reports_dir: Path | None = None,
+) -> Path:
+    out_dir = reports_dir or REPORTS_DIR
+    return out_dir / f"{event_report_stem(report_date, event_index)}.md"
 
 
 def today_jst(now: datetime | None = None) -> date:
@@ -836,76 +859,94 @@ def _load_deck_payloads(conn: sqlite3.Connection, event_ids: list[str]) -> list[
     return out
 
 
-def build_report_data(
-    conn: sqlite3.Connection,
-    report_date: date | None = None,
-    now: datetime | None = None,
-) -> DailyReportData:
-    rd = report_date or today_jst(now)
-    notes: list[str] = []
-    events_rows = _events_for_report(conn, rd)
-    if not events_rows:
-        notes.append("対象日の Challenge / Preliminary は見つかりませんでした（新規なし）。")
-    else:
-        first_date = _parse_event_date(events_rows[0]["start_time"])
-        if first_date and first_date != rd:
-            notes.append(
-                f"レポート日 {rd.isoformat()} に開始のイベントが無いため、"
-                f"直近の {first_date.isoformat()} 開催分を掲載。"
-            )
-
+def _event_summary(conn: sqlite3.Connection, ev: sqlite3.Row, notes: list[str]) -> EventSummary:
     from .overrides import recompute_top8_dist_for_event
 
-    event_summaries: list[EventSummary] = []
-    for ev in events_rows:
-        n_fix = backfill_finish_ranks_from_brackets(conn, ev["id"])
-        if n_fix:
-            notes.append(
-                f"event {ev['id']}: finish_rank をブラケットから {n_fix} 件補完"
-            )
-        recompute_top8_dist_for_event(conn, ev["id"])
-        deck_count = conn.execute(
-            "SELECT COUNT(*) AS c FROM decks WHERE event_id = ?",
-            (ev["id"],),
-        ).fetchone()["c"]
-        top32_decks = _top32_deck_rows(conn, ev["id"])
-        top32 = _arch_strength_from_decks(conn, top32_decks)
-        event_summaries.append(
-            EventSummary(
-                event_id=ev["id"],
-                name=ev["name"],
-                event_type=ev["event_type"],
-                start_time=ev["start_time"] or "",
-                player_count=ev["player_count"],
-                source_url=ev["source_url"] or "",
-                deck_count=int(deck_count),
-                top32=top32,
-                top8_bracket=_top8_bracket(conn, ev["id"]),
-                bracket_matches=_bracket_matches(conn, ev["id"]),
-            )
-        )
+    n_fix = backfill_finish_ranks_from_brackets(conn, ev["id"])
+    if n_fix:
+        notes.append(f"event {ev['id']}: finish_rank をブラケットから {n_fix} 件補完")
+    recompute_top8_dist_for_event(conn, ev["id"])
+    deck_count = conn.execute(
+        "SELECT COUNT(*) AS c FROM decks WHERE event_id = ?",
+        (ev["id"],),
+    ).fetchone()["c"]
+    top32_decks = _top32_deck_rows(conn, ev["id"])
+    top32 = _arch_strength_from_decks(conn, top32_decks)
+    return EventSummary(
+        event_id=ev["id"],
+        name=ev["name"],
+        event_type=ev["event_type"],
+        start_time=ev["start_time"] or "",
+        player_count=ev["player_count"],
+        source_url=ev["source_url"] or "",
+        deck_count=int(deck_count),
+        top32=top32,
+        top8_bracket=_top8_bracket(conn, ev["id"]),
+        bracket_matches=_bracket_matches(conn, ev["id"]),
+    )
 
-    event_ids = [e.event_id for e in event_summaries]
-    meta = _merge_arch_counts([e.top32 for e in event_summaries])
+
+def _common_report_notes(*, other_thr: float) -> list[str]:
+    return [
+        "特徴リストの同アーキ比較は直近約2週間の**メイン／サイド別**平均"
+        "（不足時さらに拡張。スコアはメイン主＋サイド0.55倍）。"
+        "比較基準は `直近2週間の同アーキ N本`（メイン比較に使った本数）。",
+        "**W-L / 勝率**はマッチ単位（ゲームではない）。"
+        "スイス順位表の W-L に Top8 シングルエリムのブラケット勝敗を合算。"
+        "勝率 = W / (W+L)。**Top8** 列は当該アーキの finish_rank≤8 本数。",
+        "累積分布（1ヵ月／1週間）は各イベントの **Top32** デッキ合算。"
+        f"シェア≤{other_thr:.0%} は **Other** に合算（`config/report.json`）。"
+        "直近1週間の**前週差**はシェア差（前週に無いアーキは —）。",
+        "未分類デッキはアーキ名の代わりに **色アイデンティティ**"
+        "（W/U/B/R/G、複数色は WUBRG 順、無色は C）を表示。",
+        "Top8 の**アーキタイプ名のみ**を **mtgo.com の個別デッキアンカー**"
+        "（`#deck_<player>`、空白は `_`）へリンク。"
+        "プレイヤー名はプレーンテキスト（リンクなし）。"
+        "特徴リストのリンク方針（MTGGoldfish 優先）は変更なし。"
+        "Discord は大会ごとに1投稿（短い `[リスト](同URL)` を優先）。",
+        "日次ファイルは **1大会 = 1 Markdown**（同日複数は "
+        "`YYYY-MM-DD-1.md`, `YYYY-MM-DD-2.md` …）。"
+        "メタ概要（Top32）・Top8・特徴リストはその大会のみ。",
+    ]
+
+
+def build_report_data_for_event(
+    conn: sqlite3.Connection,
+    ev: sqlite3.Row | dict[str, Any],
+    *,
+    report_date: date,
+    event_index: int,
+    events_on_day: int,
+    now: datetime | None = None,
+) -> DailyReportData:
+    """Build a report scoped to **one** Challenge/Preliminary event."""
+    notes: list[str] = []
+    if not isinstance(ev, sqlite3.Row):
+        # Allow plain dicts in tests / callers
+        class _Row(dict):
+            def __getitem__(self, key):  # type: ignore[no-untyped-def]
+                return dict.__getitem__(self, key)
+
+        ev_row = ev  # type: ignore[assignment]
+    else:
+        ev_row = ev
+
+    summary = _event_summary(conn, ev_row, notes)  # type: ignore[arg-type]
+    event_summaries = [summary]
+    # Meta Top32 / Top8 / distinctive: this event only (no same-day merge)
+    meta = list(summary.top32)
     checksum_notes = meta_top32_checksum(event_summaries, meta)
     log_meta_checksum(checksum_notes)
     notes.extend(checksum_notes)
 
-    # Window end = report event date when present, else report date (JST calendar)
-    as_of = rd
-    if events_rows:
-        ed = _parse_event_date(events_rows[0]["start_time"])
-        if ed:
-            as_of = ed
-
-    month_start = as_of - timedelta(days=29)  # 30 days inclusive
-    week_start = as_of - timedelta(days=6)  # 7 days inclusive
+    as_of = _parse_event_date(summary.start_time) or report_date
+    month_start = as_of - timedelta(days=29)
+    week_start = as_of - timedelta(days=6)
     prev_week_end = week_start - timedelta(days=1)
     prev_week_start = prev_week_end - timedelta(days=6)
 
     report_cfg = load_report_config()
     other_thr = float(report_cfg["other_share_threshold"])
-
     month_raw = _top32_strength_window(conn, month_start, as_of)
     week_raw = _top32_strength_window(conn, week_start, as_of)
     prev_week_raw = _top32_strength_window(conn, prev_week_start, prev_week_end)
@@ -916,7 +957,6 @@ def build_report_data(
         threshold=other_thr,
     )
 
-    # Distinctive: historical ~14d prototype
     cfg = load_distinctive_config()
 
     def _display_row(r: sqlite3.Row) -> str:
@@ -930,35 +970,15 @@ def build_report_data(
         min_lists=int(cfg["min_archetype_lists"]),
         display_fn=_display_row,
     )
-    notes.append(
-        "特徴リストの同アーキ比較は直近約2週間の**メイン／サイド別**平均"
-        "（不足時さらに拡張。スコアはメイン主＋サイド0.55倍）。"
-        "比較基準は `直近2週間の同アーキ N本`（メイン比較に使った本数）。"
-    )
-    notes.append(
-        "**W-L / 勝率**はマッチ単位（ゲームではない）。"
-        "スイス順位表の W-L に Top8 シングルエリムのブラケット勝敗を合算。"
-        "勝率 = W / (W+L)。**Top8** 列は当該アーキの finish_rank≤8 本数。"
-    )
-    notes.append(
-        "累積分布（1ヵ月／1週間）は各イベントの **Top32** デッキ合算。"
-        f"シェア≤{other_thr:.0%} は **Other** に合算（`config/report.json`）。"
-        "直近1週間の**前週差**はシェア差（前週に無いアーキは —）。"
-    )
-    notes.append(
-        "未分類デッキはアーキ名の代わりに **色アイデンティティ**"
-        "（W/U/B/R/G、複数色は WUBRG 順、無色は C）を表示。"
-    )
-    notes.append(
-        "Top8 の**アーキタイプ名のみ**を **mtgo.com の個別デッキアンカー**"
-        "（`#deck_<player>`、空白は `_`）へリンク。"
-        "プレイヤー名はプレーンテキスト（リンクなし）。"
-        "特徴リストのリンク方針（MTGGoldfish 優先）は変更なし。"
-        "Discord 日次は短い `[リスト](同URL)` を優先。"
-    )
+    notes.extend(_common_report_notes(other_thr=other_thr))
+    if events_on_day > 1:
+        notes.append(
+            f"同日（JST {report_date.isoformat()}）は大会が {events_on_day} 本。"
+            f"本ファイルはそのうち #{event_index}（開始順）。"
+        )
 
     distinctive = select_distinctive(
-        _load_deck_payloads(conn, event_ids),
+        _load_deck_payloads(conn, [summary.event_id]),
         main_prototypes=main_protos,
         side_prototypes=side_protos,
         baseline_notes=base_notes,
@@ -972,8 +992,9 @@ def build_report_data(
             "大会ページまたは mtgo.com にフォールバックします（CF回避はしません）。"
         )
 
+    stem = event_report_stem(report_date, event_index)
     return DailyReportData(
-        report_date=rd.isoformat(),
+        report_date=report_date.isoformat(),
         generated_at=(now or datetime.now(tz=JST)).astimezone(JST).isoformat(timespec="seconds"),
         events=event_summaries,
         meta_overview=meta,
@@ -981,6 +1002,88 @@ def build_report_data(
         week_dist=week_dist,
         distinctive=distinctive,
         notes=notes,
+        report_stem=stem,
+        event_index=event_index,
+        events_on_day=events_on_day,
+    )
+
+
+def build_report_data(
+    conn: sqlite3.Connection,
+    report_date: date | None = None,
+    now: datetime | None = None,
+    *,
+    event_index: int | None = None,
+    event_id: str | None = None,
+) -> DailyReportData:
+    """Build report data for one event on ``report_date`` (JST).
+
+    Prefer :func:`write_reports_for_day` for normal generation. This helper
+    returns the first event when ``event_index`` / ``event_id`` are omitted
+    (empty stub when the day has no events — used by weekly digest).
+    """
+    rd = report_date or today_jst(now)
+    events_rows = _events_for_report(conn, rd)
+    if not events_rows:
+        report_cfg = load_report_config()
+        other_thr = float(report_cfg["other_share_threshold"])
+        as_of = rd
+        month_start = as_of - timedelta(days=29)
+        week_start = as_of - timedelta(days=6)
+        prev_week_end = week_start - timedelta(days=1)
+        prev_week_start = prev_week_end - timedelta(days=6)
+        month_dist = _bucket_other(
+            _top32_strength_window(conn, month_start, as_of), other_thr
+        )
+        week_dist = _with_share_deltas(
+            _bucket_other(_top32_strength_window(conn, week_start, as_of), other_thr),
+            _top32_strength_window(conn, prev_week_start, prev_week_end),
+            threshold=other_thr,
+        )
+        return DailyReportData(
+            report_date=rd.isoformat(),
+            generated_at=(now or datetime.now(tz=JST))
+            .astimezone(JST)
+            .isoformat(timespec="seconds"),
+            events=[],
+            meta_overview=[],
+            month_dist=month_dist,
+            week_dist=week_dist,
+            distinctive=[],
+            notes=["対象日の Challenge / Preliminary は見つかりませんでした（新規なし）。"],
+            report_stem=rd.isoformat(),
+            event_index=0,
+            events_on_day=0,
+        )
+
+    chosen: sqlite3.Row | None = None
+    idx = 1
+    if event_id is not None:
+        for i, row in enumerate(events_rows, 1):
+            if str(row["id"]) == str(event_id):
+                chosen, idx = row, i
+                break
+        if chosen is None:
+            raise ValueError(f"event_id {event_id} not on JST day {rd.isoformat()}")
+    elif event_index is not None:
+        if event_index < 1 or event_index > len(events_rows):
+            raise ValueError(
+                f"event_index {event_index} out of range 1..{len(events_rows)} "
+                f"for {rd.isoformat()}"
+            )
+        chosen = events_rows[event_index - 1]
+        idx = event_index
+    else:
+        chosen = events_rows[0]
+        idx = 1
+
+    return build_report_data_for_event(
+        conn,
+        chosen,
+        report_date=rd,
+        event_index=idx,
+        events_on_day=len(events_rows),
+        now=now,
     )
 
 
@@ -1070,11 +1173,17 @@ def _render_cumul_table(rows: list[ArchCount], *, with_week_delta: bool = False)
 
 def render_markdown(data: DailyReportData) -> str:
     lines: list[str] = []
-    lines.append(f"# Pauper 日次レポート — {data.report_date}（JST）")
+    if data.event_index and data.events_on_day:
+        title_suffix = f"{data.report_date} #{data.event_index}/{data.events_on_day}"
+    else:
+        title_suffix = data.report_date
+    lines.append(f"# Pauper 大会レポート — {title_suffix}（JST）")
     lines.append("")
     lines.append(f"生成: `{data.generated_at}`")
+    if data.report_stem:
+        lines.append(f"ファイル: `{data.report_stem}.md`")
     lines.append("")
-    lines.append("対象: **Pauper Challenge** および **Preliminary**（League 除外）")
+    lines.append("対象: **単一**の Pauper Challenge / Preliminary（League 除外）")
     lines.append("")
 
     lines.append("## イベント概要")
@@ -1105,7 +1214,7 @@ def render_markdown(data: DailyReportData) -> str:
             )
         lines.append("")
 
-    lines.append("## メタ概要（Top32 合算）")
+    lines.append("## メタ概要（Top32・この大会のみ）")
     if not data.meta_overview:
         lines.append("データなし。")
     else:
@@ -1156,16 +1265,89 @@ def render_markdown(data: DailyReportData) -> str:
     return "\n".join(lines)
 
 
+def _cleanup_legacy_day_reports(
+    report_date: date,
+    *,
+    keep_stems: set[str],
+    reports_dir: Path,
+) -> list[Path]:
+    """Remove legacy combined ``YYYY-MM-DD.md`` and stale ``-N`` files for the day."""
+    removed: list[Path] = []
+    day = report_date.isoformat()
+    legacy = reports_dir / f"{day}.md"
+    if legacy.exists() and day not in keep_stems:
+        legacy.unlink()
+        removed.append(legacy)
+    for path in sorted(reports_dir.glob(f"{day}-*.md")):
+        stem = path.stem
+        if stem not in keep_stems:
+            path.unlink()
+            removed.append(path)
+    return removed
+
+
+def write_reports_for_day(
+    conn: sqlite3.Connection,
+    report_date: date | None = None,
+    reports_dir: Path | None = None,
+    now: datetime | None = None,
+) -> list[tuple[Path, DailyReportData]]:
+    """Write **one Markdown file per event** on the JST calendar day.
+
+    Filename scheme: ``reports/daily/YYYY-MM-DD-<n>.md`` where ``<n>`` is the
+    1-based index of Challenge/Preliminary events that day, ordered by
+    ``start_time`` ascending. Empty days write nothing (and delete a leftover
+    combined ``YYYY-MM-DD.md`` if present).
+    """
+    ensure_dirs()
+    rd = report_date or today_jst(now)
+    out_dir = reports_dir or REPORTS_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    events_rows = _events_for_report(conn, rd)
+    written: list[tuple[Path, DailyReportData]] = []
+    keep: set[str] = set()
+    for idx, ev in enumerate(events_rows, 1):
+        data = build_report_data_for_event(
+            conn,
+            ev,
+            report_date=rd,
+            event_index=idx,
+            events_on_day=len(events_rows),
+            now=now,
+        )
+        path = out_dir / f"{data.report_stem}.md"
+        path.write_text(render_markdown(data), encoding="utf-8")
+        keep.add(data.report_stem)
+        written.append((path, data))
+    _cleanup_legacy_day_reports(rd, keep_stems=keep, reports_dir=out_dir)
+    return written
+
+
 def write_report(
     conn: sqlite3.Connection,
     report_date: date | None = None,
     reports_dir: Path | None = None,
 ) -> tuple[Path, DailyReportData]:
-    ensure_dirs()
-    data = build_report_data(conn, report_date=report_date)
-    md = render_markdown(data)
+    """Compatibility wrapper: write all per-event reports for the day.
+
+    Returns the first written report, or a synthetic empty-day path/data when
+    there are no events (no file is created for empty days).
+    """
+    written = write_reports_for_day(conn, report_date=report_date, reports_dir=reports_dir)
+    if written:
+        return written[0]
+    rd = report_date or today_jst()
+    data = build_report_data(conn, report_date=rd)
+    # Empty day: no markdown file (Discord skips; avoid combined empty stubs).
     out_dir = reports_dir or REPORTS_DIR
-    out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{data.report_date}.md"
-    path.write_text(md, encoding="utf-8")
-    return path, data
+    _cleanup_legacy_day_reports(rd, keep_stems=set(), reports_dir=out_dir)
+    return out_dir / f"{rd.isoformat()}.md", data
+
+
+def list_event_report_stems_for_day(
+    conn: sqlite3.Connection,
+    report_date: date,
+) -> list[str]:
+    """Return ``YYYY-MM-DD-<n>`` stems for every event on the JST day."""
+    rows = _events_for_report(conn, report_date)
+    return [event_report_stem(report_date, i) for i in range(1, len(rows) + 1)]
