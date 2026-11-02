@@ -83,15 +83,15 @@ Secret が無いときでも集計自体は動きますが、Discord には投�
 |----------|----------------|
 | Actions の実行ログ | `OK report=...` や Discord 投稿ログ |
 | Discord チャンネル | 日付・イベント・Top8・メタ上位・特徴の短い要約＋全文リンク |
-| GitHub の `reports/daily/` | 大会ごとの `YYYY-MM-DD-<n>.md` が増えている／更新されている |
+| GitHub の `reports/daily/` | 大会ごとの `YYYY-MM-DD.md`（MTGO 開催日）が増えている／更新されている |
 | GitHub の `data/pauper.sqlite` | 更新時刻が進んでいる |
-| GitHub の `data/discord_posted.json` | Discord 投稿済み日付（二重投稿防止） |
+| GitHub の `data/discord_posted.json` | Discord 投稿済みキー（二重投稿防止・開催日 stem） |
 
 日次実行では **JST 昨日**の不完全イベント／欠落レポートも一度見直します（詳細はプロジェクト Context の `docs/yesterday-catchup.md`）。
 
 全文リンク例:  
-`https://github.com/MarkG666/mtgo-pauper-reports/blob/main/reports/daily/YYYY-MM-DD-1.md`（同日複数大会は `-2` など）  
-（プライベートリポジトリなので、GitHub にログインした自分だけが開けます）
+`https://github.com/MarkG666/mtgo-pauper-reports/blob/main/reports/daily/2026-10-29.md`  
+（同じ MTGO 開催日に複数大会がある稀な場合のみ `-1` / `-2`。プライベートリポジトリなので GitHub ログインが必要）
 
 ---
 

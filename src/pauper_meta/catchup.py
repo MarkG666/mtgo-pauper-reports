@@ -4,11 +4,11 @@ On each successful schedule path we look at **yesterday (JST)** only:
 
 Re-ingest / regenerate when:
 
-1. Any per-event report ``reports/daily/YYYY-MM-DD-<n>.md`` is missing for an
+1. Any per-event report ``reports/daily/{holding-date}.md`` is missing for an
    event on that JST day, or
 2. Any Challenge/Preliminary event for that JST report date looks **incomplete**, or
-3. A DB event id for that JST day does not appear in its expected ``-N`` md
-   (stale / wrong index after new same-day events land).
+3. A DB event id for that JST day does not appear in its expected holding-date md
+   (stale / wrong stem after rename).
 
 Skip when:
 
@@ -18,8 +18,8 @@ Skip when:
   carrying forward another day's event).
 
 When catch-up regenerates a day that was already discord_posted (stale or
-incomplete refresh), it **unmarks** that calendar day (and its ``-N`` stems)
-so the Discord step can re-post per event.
+incomplete refresh), it **unmarks** each event's holding-date stem so the
+Discord step can re-post per event.
 
 ## Incomplete (definition)
 
@@ -32,8 +32,8 @@ Documented here and used by ``event_incomplete_reason``:
   ``finish_rank`` in 1..8, or (b) no bracket matches yet and zero decks have
   ``finish_rank`` set while ``player_count`` suggests a finished field (≥16).
   Preliminary is not judged on Top8 ranks.
-- **Report absent**: per-event ``YYYY-MM-DD-<n>.md`` missing for a known event.
-- **Stale report**: md missing the event id that belongs at that index.
+- **Report absent**: holding-date ``YYYY-MM-DD.md`` (or ``-N`` on collision) missing.
+- **Stale report**: md missing the event id that belongs at that stem.
 """
 
 from __future__ import annotations
@@ -46,17 +46,16 @@ from pathlib import Path
 
 from .db import db_session, init_db
 from .discord_summary import unmark_discord_posted, was_discord_posted
+from .fetch_mtgo import MtgoFetcher
 from .ingest import ingest_event_html, retry_pending_ingests, run_ingest
 from .overrides import apply_all
 from .paths import DB_PATH, REPORTS_DIR, ensure_dirs
 from .report_daily import (
     _events_on_date,
-    event_report_path,
-    event_report_stem,
+    assign_holding_stems,
     today_jst,
     write_reports_for_day,
 )
-from .fetch_mtgo import MtgoFetcher
 
 logger = logging.getLogger(__name__)
 
@@ -164,16 +163,24 @@ def day_catchup_needed(
         )
         return False, ["no_events_jst"], incomplete
 
-    for idx, ev in enumerate(events, 1):
-        path = event_report_path(day, idx)
-        stem = event_report_stem(day, idx)
+    stem_map = assign_holding_stems(list(events))
+    for ev in events:
         eid = str(ev["id"])
+        stem, _hd, _i, _n = stem_map[eid]
+        path = REPORTS_DIR / f"{stem}.md"
         if not path.exists():
-            # Legacy combined day file still counts as present if it mentions eid
-            legacy = REPORTS_DIR / f"{day.isoformat()}.md"
-            if legacy.exists() and eid in legacy.read_text(encoding="utf-8"):
-                reasons.append(f"legacy_combined_report:{legacy.name}:need_split:{stem}")
-            else:
+            # Old JST-index file still counts as present if it mentions eid
+            legacy_hits = list(REPORTS_DIR.glob(f"{day.isoformat()}-*.md"))
+            legacy_hits.append(REPORTS_DIR / f"{day.isoformat()}.md")
+            found_legacy = False
+            for legacy in legacy_hits:
+                if legacy.exists() and eid in legacy.read_text(encoding="utf-8"):
+                    reasons.append(
+                        f"legacy_jst_index_report:{legacy.name}:need_rename:{stem}"
+                    )
+                    found_legacy = True
+                    break
+            if not found_legacy:
                 reasons.append(f"missing_report:{stem}.md")
             continue
         md = path.read_text(encoding="utf-8")
@@ -183,12 +190,12 @@ def day_catchup_needed(
     stale_or_missing = any(
         r.startswith("missing_report:")
         or r.startswith("stale_report_missing_event:")
-        or r.startswith("legacy_combined_report:")
+        or r.startswith("legacy_jst_index_report:")
         for r in reasons
     )
 
     # All per-event stems already posted and complete → skip
-    stems = [event_report_stem(day, i) for i in range(1, len(events) + 1)]
+    stems = [stem_map[str(ev["id"])][0] for ev in events]
     all_posted = all(was_discord_posted("daily", s) for s in stems)
     # Legacy day-level key also counts as "already delivered combined"
     legacy_posted = was_discord_posted("daily", day)
@@ -347,11 +354,14 @@ def run_yesterday_catchup(
             written = write_reports_for_day(conn, report_date=day)
             paths = [str(p) for p, _ in written]
             result.report_paths.extend(paths)
-            if unmark_discord_posted("daily", day):
-                logger.info(
-                    "catch-up unmarked discord_posted for %s so Discord can re-post",
-                    day.isoformat(),
-                )
+            # Unmark by holding-date stem (may differ from JST calendar day).
+            for path, data in written:
+                stem = data.report_stem or path.stem
+                if unmark_discord_posted("daily", stem):
+                    logger.info(
+                        "catch-up unmarked discord_posted for %s so Discord can re-post",
+                        stem,
+                    )
             logger.info("catch-up reports written for %s: %s", day.isoformat(), paths)
         result.report_path = result.report_paths[0] if result.report_paths else None
         result.report_regenerated = bool(result.report_paths)
