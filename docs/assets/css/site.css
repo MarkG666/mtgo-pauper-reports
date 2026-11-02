@@ -1,0 +1,133 @@
+:root {
+  --bg: #f7f4ef;
+  --ink: #1c1917;
+  --muted: #57534e;
+  --line: #d6d3d1;
+  --accent: #0f766e;
+  --card: #fffdf9;
+  --font-body: "Hiragino Sans", "Noto Sans JP", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "Consolas", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 17px;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 500px at 10% -10%, #dcefea 0%, transparent 55%),
+    radial-gradient(900px 400px at 100% 0%, #f3e8d8 0%, transparent 50%),
+    var(--bg);
+  font-family: var(--font-body);
+  line-height: 1.65;
+}
+
+.wrap {
+  width: min(920px, calc(100% - 2rem));
+  margin-inline: auto;
+}
+
+.site-header {
+  padding: 1.75rem 0 1rem;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 1.75rem;
+  background: color-mix(in srgb, var(--card) 80%, transparent);
+}
+
+.site-title {
+  color: var(--ink);
+  font-size: 1.45rem;
+  font-weight: 700;
+  text-decoration: none;
+  letter-spacing: 0.01em;
+}
+
+.site-tag {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+main h1 {
+  font-size: 1.55rem;
+  line-height: 1.35;
+  margin: 0 0 1rem;
+}
+
+main h2 {
+  font-size: 1.2rem;
+  margin-top: 1.8rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
+main a {
+  color: var(--accent);
+}
+
+main p,
+main li {
+  overflow-wrap: anywhere;
+}
+
+main code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: #efeae2;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+main table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.85rem 0 1.25rem;
+  font-size: 0.92rem;
+  background: var(--card);
+}
+
+main th,
+main td {
+  border: 1px solid var(--line);
+  padding: 0.4rem 0.55rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+main th {
+  background: #ebe6de;
+}
+
+main tr:nth-child(even) td {
+  background: #faf7f2;
+}
+
+.site-footer {
+  margin: 2.5rem auto 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.site-footer a {
+  color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  html {
+    font-size: 16px;
+  }
+
+  main table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
