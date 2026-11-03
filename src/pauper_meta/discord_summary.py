@@ -20,6 +20,7 @@ from .report_daily import (
     assign_holding_stems,
     build_report_data,
     build_report_data_for_event,
+    escape_md_plain,
     list_event_report_stems_for_day,
     mtgo_holding_date,
     today_jst,
@@ -157,11 +158,12 @@ def _fmt_top8_line(row: Top8Entry, *, include_deck_link: bool = True) -> str:
     When ``include_deck_link`` and ``row.deck_url`` are set, appends a short
     Discord markdown link ``[リスト](mtgo-per-deck-url)`` (not the raw URL).
     """
-    line = f"{row.place_label}: {row.player} — {row.archetype}"
+    player = escape_md_plain(row.player)
+    line = f"{row.place_label}: {player} — {row.archetype}"
     if row.finish_rank != 1:
         elim = _eliminator_player(row.eliminated_by)
         if elim:
-            line = f"{line}（{elim}に敗北）"
+            line = f"{line}（{escape_md_plain(elim)}に敗北）"
     if include_deck_link and row.deck_url:
         line = f"{line} [リスト]({row.deck_url})"
     return f"- {line}"
@@ -224,7 +226,8 @@ def _build_daily_summary_body(
             link = ""
             if distinctive_links and flag.deck_url:
                 link = f" <{flag.deck_url}>"
-            lines.append(f"- {flag.player} — {flag.archetype} {rank}{link}".rstrip())
+            player = escape_md_plain(flag.player)
+            lines.append(f"- {player} — {flag.archetype} {rank}{link}".rstrip())
         lines.append("")
 
     lines.append(f"全文: {report_url}")
