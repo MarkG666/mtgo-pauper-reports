@@ -1285,9 +1285,33 @@ def _render_diff_table(flag: DistinctiveFlag) -> list[str]:
     return lines
 
 
+def escape_md_plain(text: str) -> str:
+    """Escape Markdown so player names never trigger emphasis/code/table breaks.
+
+    MTGO names like ``__Noob__`` or ``_blaze66`` would otherwise render as
+    bold/italic on GitHub / Pages. Keep the visible characters; only add ``\\``.
+    """
+    s = text or ""
+    s = s.replace("\\", "\\\\")
+    for ch in ("`", "*", "_", "|"):
+        s = s.replace(ch, "\\" + ch)
+    return s
+
+
+def _escape_eliminated_by(text: str) -> str:
+    """Escape the player portion of ``player（archetype）`` 敗因 cells."""
+    raw = text or ""
+    if not raw or raw == "—":
+        return raw
+    if "（" in raw:
+        player, rest = raw.split("（", 1)
+        return f"{escape_md_plain(player)}（{rest}"
+    return escape_md_plain(raw)
+
+
 def _fmt_top8_md_cells(entry: Top8Entry) -> tuple[str, str]:
     """GitHub daily Top8 table cells: plain player; archetype → `#deck_` URL only."""
-    player_cell = entry.player
+    player_cell = escape_md_plain(entry.player)
     if entry.deck_url:
         return player_cell, f"[{entry.archetype}]({entry.deck_url})"
     return player_cell, entry.archetype
@@ -1313,29 +1337,35 @@ def _render_cumul_table(
     share_delta_header: str | None = None,
     winrate_delta_header: str | None = None,
 ) -> list[str]:
-    """Render cumulative arch table. Pass delta headers to include delta columns."""
+    """Render cumulative arch table. Pass delta headers to include delta columns.
+
+    Column order mirrors meta overview: 数 then Top8, then share / deltas.
+    """
     if share_delta_header and winrate_delta_header:
         lines = [
-            f"| アーキタイプ | 数 | シェア | {share_delta_header} | W-L | 勝率 | {winrate_delta_header} |",
-            "|---|---:|---:|---:|---:|---:|---:|",
+            f"| アーキタイプ | 数 | Top8 | シェア | {share_delta_header} | "
+            f"W-L | 勝率 | {winrate_delta_header} |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|",
         ]
         for a in rows:
             wl = f"{a.match_wins}-{a.match_losses}"
             wr = f"{a.winrate:.0%}" if a.winrate is not None else "—"
             lines.append(
-                f"| {a.archetype} | {a.count} | {a.share:.0%} | "
+                f"| {a.archetype} | {a.count} | {a.top8_count} | {a.share:.0%} | "
                 f"{_fmt_pct_delta(a.share_delta)} | {wl} | {wr} | "
                 f"{_fmt_pct_delta(a.winrate_delta)} |"
             )
         return lines
     lines = [
-        "| アーキタイプ | 数 | シェア | W-L | 勝率 |",
-        "|---|---:|---:|---:|---:|",
+        "| アーキタイプ | 数 | Top8 | シェア | W-L | 勝率 |",
+        "|---|---:|---:|---:|---:|---:|",
     ]
     for a in rows:
         wl = f"{a.match_wins}-{a.match_losses}"
         wr = f"{a.winrate:.0%}" if a.winrate is not None else "—"
-        lines.append(f"| {a.archetype} | {a.count} | {a.share:.0%} | {wl} | {wr} |")
+        lines.append(
+            f"| {a.archetype} | {a.count} | {a.top8_count} | {a.share:.0%} | {wl} | {wr} |"
+        )
     return lines
 
 
@@ -1383,7 +1413,8 @@ def render_markdown(data: DailyReportData) -> str:
         for e in ev.top8_bracket:
             player_cell, arch_cell = _fmt_top8_md_cells(e)
             lines.append(
-                f"| {e.place_label} | {player_cell} | {arch_cell} | {e.eliminated_by} |"
+                f"| {e.place_label} | {player_cell} | {arch_cell} | "
+                f"{_escape_eliminated_by(e.eliminated_by)} |"
             )
         lines.append("")
 
@@ -1403,10 +1434,12 @@ def render_markdown(data: DailyReportData) -> str:
         lines.extend(
             _render_cumul_table(
                 data.month_dist,
-                share_delta_header="シェア前月差",
-                winrate_delta_header="勝率前月差",
+                share_delta_header="前月差1",
+                winrate_delta_header="前月差2",
             )
         )
+        lines.append("")
+        lines.append("※前月差1=シェア、前月差2=勝率")
         if data.month_delta_note:
             lines.append("")
             lines.append(data.month_delta_note)
@@ -1420,10 +1453,12 @@ def render_markdown(data: DailyReportData) -> str:
         lines.extend(
             _render_cumul_table(
                 data.week_dist,
-                share_delta_header="シェア前週差",
-                winrate_delta_header="勝率前週差",
+                share_delta_header="前週差1",
+                winrate_delta_header="前週差2",
             )
         )
+        lines.append("")
+        lines.append("※前週差1=シェア、前週差2=勝率")
         if data.week_delta_note:
             lines.append("")
             lines.append(data.week_delta_note)
@@ -1435,7 +1470,9 @@ def render_markdown(data: DailyReportData) -> str:
     else:
         for i, d in enumerate(data.distinctive, 1):
             rank = f"#{d.finish_rank}" if d.finish_rank else "—"
-            lines.append(f"### {i}. {d.player} — {d.archetype}（{rank}）")
+            lines.append(
+                f"### {i}. {escape_md_plain(d.player)} — {d.archetype}（{rank}）"
+            )
             if d.deck_url:
                 label = {
                     "goldfish-deck": "MTGGoldfish デッキ",

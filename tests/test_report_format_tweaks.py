@@ -12,8 +12,11 @@ from pauper_meta.report_daily import (
     DailyReportData,
     EventSummary,
     Top8Entry,
+    _escape_eliminated_by,
     _fmt_pct_delta,
+    _fmt_top8_md_cells,
     _with_period_deltas,
+    escape_md_plain,
     render_markdown,
 )
 
@@ -157,10 +160,24 @@ class RenderMarkdownTests(unittest.TestCase):
         self.assertNotIn("## 注記", md)
         self.assertNotIn("検算: should not appear", md)
         self.assertIn("MTGGoldfish", md)
-        self.assertIn("シェア前月差", md)
-        self.assertIn("勝率前月差", md)
-        self.assertIn("シェア前週差", md)
-        self.assertIn("勝率前週差", md)
+        self.assertIn("前月差1", md)
+        self.assertIn("前月差2", md)
+        self.assertIn("前週差1", md)
+        self.assertIn("前週差2", md)
+        self.assertNotIn("シェア前月差", md)
+        self.assertNotIn("勝率前週差", md)
+        self.assertIn("※前月差1=シェア、前月差2=勝率", md)
+        self.assertIn("※前週差1=シェア、前週差2=勝率", md)
+        # Cumulative tables: Top8 immediately after 数
+        self.assertIn(
+            "| アーキタイプ | 数 | Top8 | シェア | 前月差1 | W-L | 勝率 | 前月差2 |",
+            md,
+        )
+        self.assertIn(
+            "| アーキタイプ | 数 | Top8 | シェア | 前週差1 | W-L | 勝率 | 前週差2 |",
+            md,
+        )
+        self.assertIn("| A | 10 | 1 |", md)  # month Top8 count
         self.assertIn("reports/meta/report-notes.md", md)
         # Baseline then blank line then メイン
         self.assertIn("- 比較基準: 直近2週間の同アーキ 10本\n\n**メイン**", md)
@@ -169,6 +186,88 @@ class RenderMarkdownTests(unittest.TestCase):
         self.assertIn("## メタ概要（Top32・この大会のみ）\n\n| アーキタイプ |", md)
         self.assertIn("## 過去1ヵ月累積のアーキタイプ分布\n\n| アーキタイプ |", md)
         self.assertIn("## 直近1週間累積のアーキタイプ分布\n\n| アーキタイプ |", md)
+
+
+class PlayerNameEscapeTests(unittest.TestCase):
+    def test_noob_underscores_escaped(self) -> None:
+        self.assertEqual(escape_md_plain("__Noob__"), r"\_\_Noob\_\_")
+        self.assertEqual(escape_md_plain("_blaze66"), r"\_blaze66")
+        player, arch = _fmt_top8_md_cells(
+            Top8Entry(
+                "優勝",
+                1,
+                "__Noob__",
+                "BG Gardens",
+                deck_url="https://www.mtgo.com/decklist/x/#deck___Noob__",
+            )
+        )
+        self.assertEqual(player, r"\_\_Noob\_\_")
+        self.assertIn("[BG Gardens](", arch)
+        self.assertEqual(
+            _escape_eliminated_by("__Noob__（BG Gardens）"),
+            r"\_\_Noob\_\_（BG Gardens）",
+        )
+
+    def test_render_escapes_player_in_top8_and_distinctive(self) -> None:
+        data = DailyReportData(
+            report_date="2026-05-22",
+            generated_at="2026-11-03T12:00:00+09:00",
+            events=[
+                EventSummary(
+                    event_id="e1",
+                    name="Pauper Challenge 32",
+                    event_type="challenge",
+                    start_time="2026-05-22 18:00:00.0",
+                    player_count=59,
+                    source_url="https://www.mtgo.com/decklist/x/",
+                    deck_count=32,
+                    top8_bracket=[
+                        Top8Entry(
+                            "優勝",
+                            1,
+                            "__Noob__",
+                            "Broodscale Combo",
+                            "—",
+                            "https://www.mtgo.com/decklist/x/#deck___Noob__",
+                        ),
+                        Top8Entry(
+                            "準優勝",
+                            2,
+                            "_blaze66",
+                            "Jund Affinity",
+                            "__Noob__（Broodscale Combo）",
+                            "https://www.mtgo.com/decklist/x/#deck__blaze66",
+                        ),
+                    ],
+                )
+            ],
+            meta_overview=[ArchCount("A", 4, 0.5, 8, 4, 0.67, 1)],
+            month_dist=[],
+            week_dist=[],
+            distinctive=[
+                DistinctiveFlag(
+                    deck_id="d1",
+                    player="__Noob__",
+                    event_id="e1",
+                    event_name="Pauper Challenge 32",
+                    archetype="Broodscale Combo",
+                    finish_rank=1,
+                    reason="test",
+                    score=1.0,
+                    baseline_note="直近2週間の同アーキ 10本",
+                )
+            ],
+            report_stem="2026-05-22",
+            holding_date="2026-05-22",
+        )
+        md = render_markdown(data)
+        self.assertIn(r"| 優勝 | \_\_Noob\_\_ |", md)
+        self.assertIn(r"| 準優勝 | \_blaze66 |", md)
+        self.assertIn(r"\_\_Noob\_\_（Broodscale Combo）", md)
+        self.assertIn(r"### 1. \_\_Noob\_\_ — Broodscale Combo（#1）", md)
+        # Raw unescaped emphasis markers must not appear as table/heading text
+        self.assertNotIn("| __Noob__ |", md)
+        self.assertNotIn("### 1. __Noob__ —", md)
 
 
 if __name__ == "__main__":
