@@ -1346,12 +1346,12 @@ def _render_cumul_table(
 ) -> list[str]:
     """Render cumulative arch table. Pass delta headers to include delta columns.
 
-    Column order: 数 → シェア → 差1 → 8率 → Top8 → W-L → 勝率 → 差2.
+    Column order: 数 → シェア → 差1 → Top8 → 8率 → W-L → 勝率 → 差2.
     （メタ概要の列順とは別。8率 = Top8 / 数。）
     """
     if share_delta_header and winrate_delta_header:
         lines = [
-            f"| アーキタイプ | 数 | シェア | {share_delta_header} | 8率 | Top8 | "
+            f"| アーキタイプ | 数 | シェア | {share_delta_header} | Top8 | 8率 | "
             f"W-L | 勝率 | {winrate_delta_header} |",
             "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
@@ -1360,21 +1360,21 @@ def _render_cumul_table(
             wr = f"{a.winrate:.0%}" if a.winrate is not None else "—"
             lines.append(
                 f"| {a.archetype} | {a.count} | {a.share:.0%} | "
-                f"{_fmt_pct_delta(a.share_delta)} | {_fmt_top8_rate(a)} | "
-                f"{a.top8_count} | {wl} | {wr} | "
+                f"{_fmt_pct_delta(a.share_delta)} | {a.top8_count} | "
+                f"{_fmt_top8_rate(a)} | {wl} | {wr} | "
                 f"{_fmt_pct_delta(a.winrate_delta)} |"
             )
         return lines
     lines = [
-        "| アーキタイプ | 数 | シェア | 8率 | Top8 | W-L | 勝率 |",
+        "| アーキタイプ | 数 | シェア | Top8 | 8率 | W-L | 勝率 |",
         "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for a in rows:
         wl = f"{a.match_wins}-{a.match_losses}"
         wr = f"{a.winrate:.0%}" if a.winrate is not None else "—"
         lines.append(
-            f"| {a.archetype} | {a.count} | {a.share:.0%} | {_fmt_top8_rate(a)} | "
-            f"{a.top8_count} | {wl} | {wr} |"
+            f"| {a.archetype} | {a.count} | {a.share:.0%} | {a.top8_count} | "
+            f"{_fmt_top8_rate(a)} | {wl} | {wr} |"
         )
     return lines
 
