@@ -368,7 +368,12 @@ def build_ingest_failure_alert(
     """One compact Discord message listing failed ingest/catch-up events.
 
     Returns ``None`` when ``failures`` is empty (caller should skip post).
+    Callers should pass only alertable failures (refuse-overwrite / already-
+    complete lookback flakes are filtered upstream).
     """
+    from .ingest_pending import filter_alertable_failures
+
+    failures = filter_alertable_failures(failures)
     if not failures:
         return None
     day = (as_of or today_jst()).isoformat()
@@ -376,7 +381,7 @@ def build_ingest_failure_alert(
         f"**Pauper ingest 失敗** `{day}`（{len(failures)}件）",
         "",
         "取得はできたが decklists 未公開／HTML 欠落、または catch-up 再試行失敗。",
-        "次日の pending 再試行で自動リトライします。",
+        "同日ジョブ内で再試行済み。次日の pending 再試行でも自動リトライします。",
         "",
     ]
     for item in failures[:15]:

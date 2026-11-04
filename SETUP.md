@@ -87,7 +87,7 @@ Secret が無いときでも集計自体は動きますが、Discord には投�
 | GitHub の `data/pauper.sqlite` | 更新時刻が進んでいる |
 | GitHub の `data/discord_posted.json` | Discord 投稿済みキー（二重投稿防止・開催日 stem） |
 
-日次実行では **JST 昨日**の不完全イベント／欠落レポートも一度見直します（詳細はプロジェクト Context の `docs/yesterday-catchup.md`）。
+日次実行では **JST 昨日**の不完全イベント／欠落レポートも一度見直します（詳細はプロジェクト Context の `docs/yesterday-catchup.md`）。取得失敗（`decklists.data` 欠落など）は **同日ジョブ内で最大2回・約45秒間隔**で再試行し、それでもダメなら `data/ingest_pending.json` 経由で翌日もリトライします。すでにデッキが揃っているイベントの `refusing to overwrite` はアラートしません。
 
 全文リンク例:  
 `https://github.com/MarkG666/mtgo-pauper-reports/blob/main/reports/daily/2026-10-29.md`  

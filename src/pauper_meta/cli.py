@@ -111,6 +111,8 @@ def cmd_run_daily(args: argparse.Namespace) -> int:
     if catchup and catchup.failed:
         failed.extend(catchup.failed)
     # Dedupe by event_id/slug for a single Discord alert.
+    from .ingest_pending import filter_alertable_failures
+
     seen_fail: set[str] = set()
     unique_failed: list[dict] = []
     for item in failed:
@@ -119,7 +121,8 @@ def cmd_run_daily(args: argparse.Namespace) -> int:
             continue
         seen_fail.add(key)
         unique_failed.append(item)
-    if unique_failed:
+    alertable = filter_alertable_failures(unique_failed)
+    if alertable:
         from .discord_summary import post_ingest_failure_alert
 
         # Report + catch-up already ran. Lookback HTML flakes on old events must
@@ -127,17 +130,22 @@ def cmd_run_daily(args: argparse.Namespace) -> int:
         # (workflow also continues on failure; keep exit 2 as a visible signal).
         logging.error(
             "run-daily finished with %s ingest/catch-up failure(s) after writing report",
-            len(unique_failed),
+            len(alertable),
         )
-        for item in unique_failed[:10]:
+        for item in alertable[:10]:
             logging.error("  failure detail: %s", item)
         try:
-            post_ingest_failure_alert(unique_failed, as_of=today)
+            post_ingest_failure_alert(alertable, as_of=today)
         except Exception as exc:  # noqa: BLE001 — alert must not hide exit 2
             logging.exception("ingest failure Discord alert failed: %s", exc)
         # Machine-readable for Actions (optional secondary alert step).
-        print(f"INGEST_FAILURES={len(unique_failed)}")
+        print(f"INGEST_FAILURES={len(alertable)}")
         return 2
+    if unique_failed and not alertable:
+        logging.info(
+            "run-daily: %s benign ingest issue(s) suppressed from alert/exit",
+            len(unique_failed),
+        )
     print("INGEST_FAILURES=0")
     return 0
 
