@@ -1317,6 +1317,13 @@ def _fmt_top8_md_cells(entry: Top8Entry) -> tuple[str, str]:
     return player_cell, entry.archetype
 
 
+def _fmt_top8_rate(a: ArchCount) -> str:
+    """Top8入賞数 / 窓内デッキ数（数）. count=0 → —（勝率の無データと同じ）."""
+    if a.count <= 0:
+        return "—"
+    return f"{(a.top8_count / a.count):.0%}"
+
+
 def _render_meta_table(rows: list[ArchCount]) -> list[str]:
     lines = [
         "| アーキタイプ | 数 | Top8 | シェア | W-L | 勝率 |",
@@ -1339,32 +1346,35 @@ def _render_cumul_table(
 ) -> list[str]:
     """Render cumulative arch table. Pass delta headers to include delta columns.
 
-    Column order mirrors meta overview: 数 then Top8, then share / deltas.
+    Column order: 数 → シェア → 差1 → 8率 → Top8 → W-L → 勝率 → 差2.
+    （メタ概要の列順とは別。8率 = Top8 / 数。）
     """
     if share_delta_header and winrate_delta_header:
         lines = [
-            f"| アーキタイプ | 数 | Top8 | シェア | {share_delta_header} | "
+            f"| アーキタイプ | 数 | シェア | {share_delta_header} | 8率 | Top8 | "
             f"W-L | 勝率 | {winrate_delta_header} |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
         for a in rows:
             wl = f"{a.match_wins}-{a.match_losses}"
             wr = f"{a.winrate:.0%}" if a.winrate is not None else "—"
             lines.append(
-                f"| {a.archetype} | {a.count} | {a.top8_count} | {a.share:.0%} | "
-                f"{_fmt_pct_delta(a.share_delta)} | {wl} | {wr} | "
+                f"| {a.archetype} | {a.count} | {a.share:.0%} | "
+                f"{_fmt_pct_delta(a.share_delta)} | {_fmt_top8_rate(a)} | "
+                f"{a.top8_count} | {wl} | {wr} | "
                 f"{_fmt_pct_delta(a.winrate_delta)} |"
             )
         return lines
     lines = [
-        "| アーキタイプ | 数 | Top8 | シェア | W-L | 勝率 |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| アーキタイプ | 数 | シェア | 8率 | Top8 | W-L | 勝率 |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for a in rows:
         wl = f"{a.match_wins}-{a.match_losses}"
         wr = f"{a.winrate:.0%}" if a.winrate is not None else "—"
         lines.append(
-            f"| {a.archetype} | {a.count} | {a.top8_count} | {a.share:.0%} | {wl} | {wr} |"
+            f"| {a.archetype} | {a.count} | {a.share:.0%} | {_fmt_top8_rate(a)} | "
+            f"{a.top8_count} | {wl} | {wr} |"
         )
     return lines
 

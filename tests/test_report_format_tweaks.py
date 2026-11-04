@@ -168,16 +168,24 @@ class RenderMarkdownTests(unittest.TestCase):
         self.assertNotIn("勝率前週差", md)
         self.assertIn("※前月差1=シェア、前月差2=勝率", md)
         self.assertIn("※前週差1=シェア、前週差2=勝率", md)
-        # Cumulative tables: Top8 immediately after 数
+        # Cumulative: 数 → シェア → 差1 → 8率 → Top8 → W-L → 勝率 → 差2
         self.assertIn(
-            "| アーキタイプ | 数 | Top8 | シェア | 前月差1 | W-L | 勝率 | 前月差2 |",
+            "| アーキタイプ | 数 | シェア | 前月差1 | 8率 | Top8 | W-L | 勝率 | 前月差2 |",
             md,
         )
         self.assertIn(
-            "| アーキタイプ | 数 | Top8 | シェア | 前週差1 | W-L | 勝率 | 前週差2 |",
+            "| アーキタイプ | 数 | シェア | 前週差1 | 8率 | Top8 | W-L | 勝率 | 前週差2 |",
             md,
         )
-        self.assertIn("| A | 10 | 1 |", md)  # month Top8 count
+        # month: count=10, top8=1 → 8率 10%; share 50%; deltas +2% / -1%
+        self.assertIn("| A | 10 | 50% | +2% | 10% | 1 | 10-10 | 50% | -1% |", md)
+        # week: count=4, top8=1 → 8率 25%
+        self.assertIn("| A | 4 | 40% | - | 25% | 1 | 4-4 | 50% | +3% |", md)
+        # Per-event meta overview keeps Top8 next to 数 (no 8率)
+        self.assertIn(
+            "| アーキタイプ | 数 | Top8 | シェア | W-L | 勝率 |",
+            md,
+        )
         self.assertIn("reports/meta/report-notes.md", md)
         # Baseline then blank line then メイン
         self.assertIn("- 比較基準: 直近2週間の同アーキ 10本\n\n**メイン**", md)

@@ -44,7 +44,7 @@ Secret が無い間も集計は動きますが、Discord 投稿はスキップ�
 - **Top8 ブラケット**: 優勝〜Top8・プレイヤー＋アーキ＋敗因  
 - **メタ概要**: **その大会の** Top32（数 / Top8 / シェア / W-L / 勝率）。同日の他大会と合算しない  
 - **ファイル**: 1大会 = 1 Markdown（`YYYY-MM-DD.md` = MTGO decklist URL の開催日。衝突時のみ `-1` / `-2`）  
-- **累積**: 過去1ヵ月／直近1週間。数の横に Top8。シェア≤2% は Other。差分配列は前月差1/2・前週差1/2（1=シェア、2=勝率）
+- **累積**: 過去1ヵ月／直近1週間。列順は 数／シェア／差1／8率／Top8／W-L／勝率／差2。8率=Top8/数。シェア≤2% は Other。差分配列は前月差1/2・前週差1/2（1=シェア、2=勝率）
 - **特徴リスト**: Top16 から 3〜5 本。直近2週間の同アーキ平均との差分（メイン／サイド）  
 - アーキ改名: `config/aliases.csv` / 個別: `config/overrides.csv` → `apply-overrides`  
 - 旧 **Glitters** は色つき Hawk 名（**Boros Hawk** 基本。Sneaky Snacker のみでは色を足さない。黒スプラッシュ→**Mardu Hawk**、青→**Jeskai Hawk**、黒＋青→**4c Hawk**）
