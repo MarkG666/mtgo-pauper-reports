@@ -1,1 +1,32 @@
-[]
+[
+  {
+    "event_id": "12856975",
+    "slug": "pauper-challenge-16-2026-10-2412856975",
+    "url": "https://www.mtgo.com/decklist/pauper-challenge-16-2026-10-2412856975/",
+    "event_type": "challenge",
+    "first_failed_at": "2026-11-04T07:23:37+00:00",
+    "last_failed_at": "2026-11-04T07:23:37+00:00",
+    "last_error": "refusing to overwrite event 12856975 (32 decks) with empty decklists parse",
+    "attempts": 1
+  },
+  {
+    "event_id": "12856967",
+    "slug": "pauper-challenge-32-2026-10-2312856967",
+    "url": "https://www.mtgo.com/decklist/pauper-challenge-32-2026-10-2312856967/",
+    "event_type": "challenge",
+    "first_failed_at": "2026-11-04T07:23:38+00:00",
+    "last_failed_at": "2026-11-04T07:23:38+00:00",
+    "last_error": "window.MTGO.decklists.data not found in HTML",
+    "attempts": 1
+  },
+  {
+    "event_id": "12856616",
+    "slug": "pauper-challenge-32-2026-10-1912856616",
+    "url": "https://www.mtgo.com/decklist/pauper-challenge-32-2026-10-1912856616/",
+    "event_type": "challenge",
+    "first_failed_at": "2026-11-04T07:23:43+00:00",
+    "last_failed_at": "2026-11-04T07:23:43+00:00",
+    "last_error": "window.MTGO.decklists.data not found in HTML",
+    "attempts": 1
+  }
+]
