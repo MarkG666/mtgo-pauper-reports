@@ -4,12 +4,16 @@ When decklist HTML is not ready yet, listing ingest used to fail without
 leaving a DB row. Catch-up then saw ``no events (JST)`` for that day and
 never retried. This queue keeps ``event_id`` / URL until decks land or the
 entry ages out.
+
+Same-day ingest also retries transient HTML flakes a few times; this queue
+remains the next-day safety net.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -20,9 +24,59 @@ log = logging.getLogger(__name__)
 
 MAX_AGE_DAYS = 7
 
+# Errors that are worth sleeping + re-fetching in the same Actions job.
+RETRYABLE_ERROR_MARKERS = (
+    "window.MTGO.decklists.data not found",
+    "decklists still empty",
+    "empty decklists",
+    "Read timed out",
+    "timed out",
+    "Timeout",
+    "ConnectionError",
+    "Connection reset",
+    "RemoteDisconnected",
+    "ChunkedEncodingError",
+    "503",
+    "502",
+    "504",
+    "500",
+)
+
+# Protective / already-have-data — not an ops alert.
+BENIGN_ERROR_MARKERS = (
+    "refusing to overwrite",
+)
+
 
 def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+
+
+def is_retryable_error(error: str | BaseException) -> bool:
+    text = str(error)
+    if is_benign_error(text):
+        return False
+    return any(m in text for m in RETRYABLE_ERROR_MARKERS)
+
+
+def is_benign_error(error: str | BaseException) -> bool:
+    """True for protective refuses that must not page ops Discord."""
+    text = str(error)
+    return any(m in text for m in BENIGN_ERROR_MARKERS)
+
+
+def is_alertable_failure(item: dict[str, Any]) -> bool:
+    """False for refuse-overwrite / already-complete lookback flakes."""
+    if item.get("benign") or item.get("skip_alert"):
+        return False
+    err = str(item.get("error") or "")
+    if is_benign_error(err):
+        return False
+    return True
+
+
+def filter_alertable_failures(failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [f for f in failures if is_alertable_failure(f)]
 
 
 def load_pending(path: Path | None = None) -> list[dict[str, Any]]:
@@ -53,7 +107,18 @@ def register_failure(
     error: str,
     path: Path | None = None,
 ) -> None:
-    """Upsert a pending failure (idempotent by event_id)."""
+    """Upsert a pending failure (idempotent by event_id).
+
+    Benign protective errors (refuse-overwrite) are not queued.
+    """
+    if is_benign_error(error):
+        log.info(
+            "ingest_pending skip register (benign) event_id=%s error=%s",
+            event_id,
+            str(error)[:120],
+        )
+        clear_pending(event_id, path=path)
+        return
     items = load_pending(path)
     now = _now_iso()
     found = False
@@ -112,6 +177,47 @@ def prune_stale(path: Path | None = None, *, max_age_days: int = MAX_AGE_DAYS) -
         if ts < cutoff:
             dropped += 1
             log.info("ingest_pending prune stale event_id=%s", item.get("event_id"))
+            continue
+        keep.append(item)
+    if dropped:
+        save_pending(keep, path)
+    return dropped
+
+
+def prune_resolved(
+    conn: sqlite3.Connection,
+    path: Path | None = None,
+    *,
+    event_complete_fn=None,
+) -> int:
+    """Drop pending rows whose event already has usable decks in DB.
+
+    ``event_complete_fn(conn, event_id) -> bool`` defaults to deck_count > 0.
+    Prefer passing catch-up completeness when available.
+    """
+    items = load_pending(path)
+    if not items:
+        return 0
+    keep: list[dict[str, Any]] = []
+    dropped = 0
+    for item in items:
+        eid = str(item.get("event_id") or "")
+        if not eid:
+            continue
+        if event_complete_fn is not None:
+            try:
+                resolved = bool(event_complete_fn(conn, eid))
+            except Exception as exc:  # noqa: BLE001
+                log.debug("prune_resolved complete check failed %s: %s", eid, exc)
+                resolved = False
+        else:
+            n = conn.execute(
+                "SELECT COUNT(*) AS c FROM decks WHERE event_id = ?", (eid,)
+            ).fetchone()["c"]
+            resolved = int(n) > 0
+        if resolved:
+            dropped += 1
+            log.info("ingest_pending prune resolved event_id=%s", eid)
             continue
         keep.append(item)
     if dropped:

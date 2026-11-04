@@ -47,7 +47,16 @@ from pathlib import Path
 from .db import db_session, init_db
 from .discord_summary import unmark_discord_posted, was_discord_posted
 from .fetch_mtgo import MtgoFetcher
-from .ingest import ingest_event_html, retry_pending_ingests, run_ingest
+from .ingest import (
+    INGEST_RETRY_DELAY_SEC,
+    INGEST_SAME_DAY_RETRIES,
+    event_has_complete_decks,
+    ingest_event_html,
+    ingest_with_same_day_retries,
+    retry_pending_ingests,
+    run_ingest,
+)
+from .ingest_pending import clear_pending, is_benign_error
 from .overrides import apply_all
 from .paths import DB_PATH, REPORTS_DIR, ensure_dirs
 from .report_daily import (
@@ -210,17 +219,32 @@ def day_catchup_needed(
     return needed, reasons, incomplete
 
 
-def _reingest_event(ev: dict | sqlite3.Row, *, fetcher: MtgoFetcher) -> str:
+def _reingest_event(
+    ev: dict | sqlite3.Row,
+    *,
+    fetcher: MtgoFetcher,
+    same_day_retries: int = INGEST_SAME_DAY_RETRIES,
+    retry_delay_sec: float = INGEST_RETRY_DELAY_SEC,
+) -> str:
     eid = str(ev["id"])
     url = (ev["source_url"] or "").strip()
     if not url:
         raise RuntimeError(f"event {eid} has no source_url")
-    html, cache_path = fetcher.fetch_event(url, eid, force=True)
-    return ingest_event_html(
-        html,
-        source_url=url,
-        raw_path=str(cache_path),
-        fallback_type=ev["event_type"],
+
+    def _once() -> str:
+        html, cache_path = fetcher.fetch_event(url, eid, force=True)
+        return ingest_event_html(
+            html,
+            source_url=url,
+            raw_path=str(cache_path),
+            fallback_type=ev["event_type"],
+        )
+
+    return ingest_with_same_day_retries(
+        attempt_fn=_once,
+        label=eid,
+        retries=same_day_retries,
+        delay_sec=retry_delay_sec,
     )
 
 
@@ -268,7 +292,8 @@ def run_yesterday_catchup(
         len(pending_summary["failed"]),
     )
     for f in pending_summary["failed"]:
-        result.failed.append(f)
+        if not is_benign_error(str(f.get("error") or "")):
+            result.failed.append(f)
     if pending_summary["ingested"]:
         result.needed = True
         result.reinested.extend(pending_summary["ingested"])
@@ -304,7 +329,8 @@ def run_yesterday_catchup(
         len(listing_summary["failed"]),
     )
     for f in listing_summary["failed"]:
-        result.failed.append(f)
+        if not is_benign_error(str(f.get("error") or "")) and not f.get("benign"):
+            result.failed.append(f)
 
     # Force-refresh incomplete events for each needed day.
     to_refresh: list[tuple[IncompleteEvent, dict]] = []
@@ -325,8 +351,25 @@ def run_yesterday_catchup(
             result.reinested.append(eid)
             logger.info("catch-up reinested %s (%s)", eid, item.reason)
         except Exception as exc:  # noqa: BLE001
+            err = str(exc)
+            if is_benign_error(exc):
+                clear_pending(item.event_id)
+                logger.warning(
+                    "catch-up kept existing decks for %s (%s)", item.event_id, err
+                )
+                continue
+            with db_session(db_path or DB_PATH) as conn:
+                already_ok = event_has_complete_decks(conn, item.event_id)
+            if already_ok:
+                clear_pending(item.event_id)
+                logger.warning(
+                    "catch-up ignore error for already-complete %s: %s",
+                    item.event_id,
+                    err,
+                )
+                continue
             logger.exception("catch-up failed %s: %s", item.event_id, exc)
-            result.failed.append({"event_id": item.event_id, "error": str(exc)})
+            result.failed.append({"event_id": item.event_id, "error": err})
 
     # Regenerate reports for every day we touched (needed days + pending successes).
     regen_days = {d for d, _, _ in days_needed}
