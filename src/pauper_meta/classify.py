@@ -240,16 +240,44 @@ SIGNATURES: list[tuple[str, list[tuple[str, int]]]] = [
             ("Songs of the Damned", 4),
         ],
     ),
+    # Cycle Storm (true cycling-storm combo): Lotus Petal + Dark Ritual + Songs
+    # + Drannith/Street Wraith cyclers + Reaping the Graves. Core gate required.
+    # Do NOT include Weather the Storm / fog effects — those are Turbo Fog.
     (
         "Cycle Storm",
         [
-            ("Lotus Petal", 3),
-            ("Dark Ritual", 3),
-            ("Songs of the Damned", 3),
-            ("Streambed Aquitects", 2),
-            ("Drannith Ruins", 2),
-            ("Rites of Initiation", 3),
-            ("Weather the Storm", 2),
+            ("Lotus Petal", 4),
+            ("Dark Ritual", 4),
+            ("Songs of the Damned", 4),
+            ("Cabal Ritual", 3),
+            ("Drannith Stinger", 3),
+            ("Drannith Healer", 3),
+            ("Street Wraith", 3),
+            ("Reaping the Graves", 4),
+            ("Rowan's Grim Search", 2),
+            ("Imposing Vantasaur", 2),
+            ("Monstrous Carabid", 2),
+            ("Horror of the Broken Lands", 2),
+        ],
+    ),
+    # Turbo Fog (UG fog mill): Moment's Peace + Weather the Storm / Tangle / Fog
+    # + Stream of Thought. Distinct from Cycle Storm cycling combo.
+    # Core gate avoids Poison / proliferate lists that splash Weather the Storm.
+    (
+        "Turbo Fog",
+        [
+            ("Moment's Peace", 5),
+            ("Weather the Storm", 4),
+            ("Tangle", 3),
+            ("Fog", 2),
+            ("Respite", 2),
+            ("Stream of Thought", 3),
+            ("Growth Spiral", 2),
+            ("Arcane Denial", 2),
+            ("Behold the Multiverse", 2),
+            ("Embrace the Paradox", 2),
+            ("Plunder the Trollshaws", 2),
+            ("Accumulated Knowledge", 2),
         ],
     ),
     # Ruby Storm (Kampo-style): Goblin Anarchomancer + Thornscape Familiar (~4+4),
@@ -885,6 +913,91 @@ def _resolve_ruby_storm(counts: Counter[str], best_name: str, scores: list[tuple
     return best_name
 
 
+def _is_cycle_storm_core(counts: Counter[str]) -> bool:
+    """Lotus Petal + ritual/Songs package with cycling creatures / Reaping payoff.
+
+    Excludes fog shells (Weather the Storm alone) and Lotus Petal storage-land
+    lists without the black cycling engine.
+    """
+    petal = counts.get("Lotus Petal", 0)
+    ritual = counts.get("Dark Ritual", 0) + counts.get("Cabal Ritual", 0)
+    songs = counts.get("Songs of the Damned", 0)
+    cyclers = (
+        counts.get("Drannith Stinger", 0)
+        + counts.get("Drannith Healer", 0)
+        + counts.get("Street Wraith", 0)
+        + counts.get("Imposing Vantasaur", 0)
+        + counts.get("Monstrous Carabid", 0)
+        + counts.get("Horror of the Broken Lands", 0)
+    )
+    reaping = counts.get("Reaping the Graves", 0)
+    if petal < 3:
+        return False
+    if songs >= 3 and ritual >= 3 and (cyclers >= 4 or reaping >= 3):
+        return True
+    if songs >= 3 and cyclers >= 6 and reaping >= 3:
+        return True
+    return False
+
+
+def _resolve_cycle_storm(counts: Counter[str], best_name: str, scores: list[tuple[str, int]]) -> str:
+    """Keep Cycle Storm only for the cycling-storm combo core; else demote."""
+    if _is_cycle_storm_core(counts):
+        return "Cycle Storm"
+    if best_name == "Cycle Storm":
+        for name, score in scores:
+            if name != "Cycle Storm" and score >= 8:
+                return name
+        return "Unknown"
+    return best_name
+
+
+def _fog_effect_count(counts: Counter[str]) -> int:
+    return (
+        counts.get("Moment's Peace", 0)
+        + counts.get("Weather the Storm", 0)
+        + counts.get("Tangle", 0)
+        + counts.get("Fog", 0)
+        + counts.get("Respite", 0)
+    )
+
+
+def _is_turbo_fog_core(counts: Counter[str]) -> bool:
+    """UG fog mill package: Moment's Peace plus fog density / Stream of Thought.
+
+    Requires Moment's Peace so Poison/proliferate lists that only splash
+    Weather the Storm are not labeled Turbo Fog.
+    """
+    mop = counts.get("Moment's Peace", 0)
+    if mop < 3:
+        return False
+    fogs = _fog_effect_count(counts)
+    stream = counts.get("Stream of Thought", 0)
+    # Typical Challenge shell: 4 MoP + 4 WtS + 3–4 Tangle (+ optional Fog/Respite).
+    if fogs >= 8:
+        return True
+    if mop >= 3 and counts.get("Weather the Storm", 0) >= 3 and (stream >= 1 or fogs >= 9):
+        return True
+    return False
+
+
+def _resolve_turbo_fog(counts: Counter[str], best_name: str, scores: list[tuple[str, int]]) -> str:
+    """Keep Turbo Fog when the fog-mill core won the score race.
+
+    Also retarget Cycle Storm → Turbo Fog when the fog core is present (legacy
+    Weather-the-Storm false positives). Does **not** steal Tron / other higher
+    scores that merely splash fog effects alongside a different engine.
+    """
+    if _is_turbo_fog_core(counts) and best_name in ("Turbo Fog", "Cycle Storm"):
+        return "Turbo Fog"
+    if best_name == "Turbo Fog":
+        for name, score in scores:
+            if name != "Turbo Fog" and score >= 8:
+                return name
+        return "Unknown"
+    return best_name
+
+
 def _is_faeries_core(counts: Counter[str]) -> bool:
     """Spellstutter Sprite package with ninja / seer support."""
     if counts.get("Spellstutter Sprite", 0) < 2:
@@ -1099,6 +1212,12 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
         # Ruby Storm only scores with the dual-creature + storage-land core.
         if name == "Ruby Storm" and not _is_ruby_storm_core(counts):
             continue
+        # Cycle Storm only scores with the Lotus Petal + Songs cycling combo core.
+        if name == "Cycle Storm" and not _is_cycle_storm_core(counts):
+            continue
+        # Turbo Fog only scores with Moment's Peace + fog density (not WtS-only).
+        if name == "Turbo Fog" and not _is_turbo_fog_core(counts):
+            continue
         score = 0
         for card, weight in sigs:
             qty = counts.get(card, 0)
@@ -1117,6 +1236,16 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
             ruby_score = next((s for n, s in scores if n == "Ruby Storm"), 0)
             return Classification(
                 archetype="Ruby Storm", score=max(ruby_score, 8), runners_up=scores[:3]
+            )
+        if _is_turbo_fog_core(counts):
+            fog_score = next((s for n, s in scores if n == "Turbo Fog"), 0)
+            return Classification(
+                archetype="Turbo Fog", score=max(fog_score, 8), runners_up=scores[:3]
+            )
+        if _is_cycle_storm_core(counts):
+            cycle_score = next((s for n, s in scores if n == "Cycle Storm"), 0)
+            return Classification(
+                archetype="Cycle Storm", score=max(cycle_score, 8), runners_up=scores[:3]
             )
         if _is_faeries_core(counts):
             name = _faeries_variant_name(counts)
@@ -1147,6 +1276,9 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     best_name = _resolve_mono_red_aggro(counts, best_name)
     best_name = _resolve_hawk_family(counts, best_name, scores)
     best_name = _resolve_ruby_storm(counts, best_name, scores)
+    # Fog mill before Cycle Storm so MoP shells never stay as cycling combo.
+    best_name = _resolve_turbo_fog(counts, best_name, scores)
+    best_name = _resolve_cycle_storm(counts, best_name, scores)
     best_name = _resolve_faeries_family(counts, best_name, scores)
     # After Faeries demotion may land on Affinity signature — apply color name / core gate.
     best_name = _resolve_affinity_family(counts, best_name, scores)
