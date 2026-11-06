@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import db_session, init_db
+from .distinctive import DistinctiveFlag
 from .paths import DISCORD_POSTED_PATH, REPORTS_DIR, ensure_dirs
 from .report_daily import (
     DailyReportData,
@@ -153,20 +154,47 @@ def _eliminator_player(eliminated_by: str) -> str | None:
 
 
 def _fmt_top8_line(row: Top8Entry, *, include_deck_link: bool = True) -> str:
-    """例: `準優勝: seasonofmists — Grixis Affinity（yahakaraに敗北）`（優勝は括弧なし）.
+    """例: `準優勝: seasonofmists — [Grixis Affinity](url)（yahakaraに敗北）`（優勝は括弧なし）.
 
-    When ``include_deck_link`` and ``row.deck_url`` are set, appends a short
-    Discord markdown link ``[リスト](mtgo-per-deck-url)`` (not the raw URL).
+    When ``include_deck_link`` and ``row.deck_url`` are set, the archetype /
+    deck name is the Discord markdown link to the MTGO ``#deck_<player>`` URL
+    (player name stays plain / escaped). Missing URL → plain archetype.
     """
     player = escape_md_plain(row.player)
-    line = f"{row.place_label}: {player} — {row.archetype}"
+    if include_deck_link and row.deck_url:
+        arch = f"[{row.archetype}]({row.deck_url})"
+    else:
+        arch = row.archetype
+    line = f"{row.place_label}: {player} — {arch}"
     if row.finish_rank != 1:
         elim = _eliminator_player(row.eliminated_by)
         if elim:
             line = f"{line}（{escape_md_plain(elim)}に敗北）"
-    if include_deck_link and row.deck_url:
-        line = f"{line} [リスト]({row.deck_url})"
     return f"- {line}"
+
+
+def _is_goldfish_url(url: str | None, link_source: str = "") -> bool:
+    """True when distinctive deck_url is an MTGGoldfish page (deck or tournament)."""
+    if link_source.startswith("goldfish"):
+        return True
+    if not url:
+        return False
+    return "mtggoldfish.com" in url.lower()
+
+
+def _fmt_distinctive_line(flag: DistinctiveFlag, *, include_link: bool = True) -> str:
+    """例: `Player — [Spy Combo](goldfish-url) #2`（URL 無しはプレーン名）.
+
+    Embeds the Goldfish URL into the archetype / deck name when present.
+    Non-Goldfish fallbacks (mtgo-event 等) stay plain — no outboard link.
+    """
+    player = escape_md_plain(flag.player)
+    rank = f"#{flag.finish_rank}" if flag.finish_rank else ""
+    if include_link and flag.deck_url and _is_goldfish_url(flag.deck_url, flag.link_source):
+        arch = f"[{flag.archetype}]({flag.deck_url})"
+    else:
+        arch = flag.archetype
+    return f"- {player} — {arch} {rank}".rstrip()
 
 
 def _build_daily_summary_body(
@@ -180,7 +208,7 @@ def _build_daily_summary_body(
     """Assemble daily summary text for **one event**.
 
     ``top8_links``:
-      - ``per-deck``: each Top8 line gets ``[リスト](#deck_…)`` markdown
+      - ``per-deck``: archetype name links to MTGO ``#deck_…`` URL
       - ``event``: one ``リストページ: <event-url>`` under each Top8 header
       - ``none``: no Top8 deck URLs
     """
@@ -222,12 +250,7 @@ def _build_daily_summary_body(
     if data.distinctive:
         lines.append("**特徴リスト**")
         for flag in data.distinctive[:5]:
-            rank = f"#{flag.finish_rank}" if flag.finish_rank else ""
-            link = ""
-            if distinctive_links and flag.deck_url:
-                link = f" <{flag.deck_url}>"
-            player = escape_md_plain(flag.player)
-            lines.append(f"- {player} — {flag.archetype} {rank}{link}".rstrip())
+            lines.append(_fmt_distinctive_line(flag, include_link=distinctive_links))
         lines.append("")
 
     lines.append(f"全文: {report_url}")
@@ -241,11 +264,11 @@ def build_daily_summary(
 ) -> str:
     """Build Discord daily text under ``MAX_CHARS`` (Discord hard limit 2000).
 
-    Preference: short per-deck ``[リスト](url)`` links. If that exceeds the
-    budget, drop distinctive URLs first (names remain; full report keeps
-    Goldfish), then shrink meta rows, then fall back to one
-    ``リストページ: <event-url>`` line per Top8 block (omit per-deck URLs).
-    Hard truncate only as last resort.
+    Preference: archetype name → MTGO ``#deck_…`` links on Top8, and Goldfish
+    URL embedded in distinctive archetype names. If that exceeds the budget,
+    drop distinctive URLs first (names remain; full report keeps Goldfish),
+    then shrink meta rows, then fall back to one ``リストページ: <event-url>``
+    line per Top8 block (omit per-deck URLs). Hard truncate only as last resort.
     """
     stem = data.report_stem or data.report_date
     url = report_url or report_github_url(stem)
