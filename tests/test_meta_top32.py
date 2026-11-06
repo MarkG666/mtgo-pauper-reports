@@ -134,7 +134,7 @@ class Top32CohortTests(unittest.TestCase):
 
 
 class DiscordTop8LinkTests(unittest.TestCase):
-    def test_short_list_markdown(self) -> None:
+    def test_archetype_name_is_deck_link(self) -> None:
         from pauper_meta.discord_summary import _fmt_top8_line
 
         row = Top8Entry(
@@ -145,8 +145,205 @@ class DiscordTop8LinkTests(unittest.TestCase):
             deck_url="https://www.mtgo.com/decklist/x/#deck_Alice",
         )
         line = _fmt_top8_line(row, include_deck_link=True)
-        self.assertIn("[リスト](https://www.mtgo.com/decklist/x/#deck_Alice)", line)
+        self.assertEqual(
+            line,
+            "- 優勝: Alice — [Bogles](https://www.mtgo.com/decklist/x/#deck_Alice)",
+        )
+        self.assertNotIn("[リスト]", line)
         self.assertNotIn("<https://", line)
+
+    def test_no_deck_url_leaves_plain_archetype(self) -> None:
+        from pauper_meta.discord_summary import _fmt_top8_line
+
+        row = Top8Entry("Top8", 8, "Bob", "Elves", eliminated_by="Alice（Bogles）")
+        line = _fmt_top8_line(row, include_deck_link=True)
+        self.assertEqual(line, "- Top8: Bob — Elves（Aliceに敗北）")
+        self.assertNotIn("](", line)
+
+    def test_player_stays_plain_when_linked(self) -> None:
+        from pauper_meta.discord_summary import _fmt_top8_line
+
+        row = Top8Entry(
+            "準優勝",
+            2,
+            "__Noob__",
+            "Grixis Affinity",
+            eliminated_by="Alice（Bogles）",
+            deck_url="https://www.mtgo.com/decklist/x/#deck___Noob__",
+        )
+        line = _fmt_top8_line(row, include_deck_link=True)
+        self.assertIn(r"\_\_Noob\_\_", line)
+        self.assertIn(
+            "[Grixis Affinity](https://www.mtgo.com/decklist/x/#deck___Noob__)",
+            line,
+        )
+        self.assertNotIn("[__Noob__]", line)
+        self.assertNotIn(r"[\_\_Noob\_\_]", line)
+
+
+class DiscordDistinctiveLinkTests(unittest.TestCase):
+    def test_goldfish_url_embeds_in_archetype(self) -> None:
+        from pauper_meta.discord_summary import _fmt_distinctive_line
+        from pauper_meta.distinctive import DistinctiveFlag
+
+        flag = DistinctiveFlag(
+            deck_id="d1",
+            player="TomJubarte",
+            event_id="e1",
+            event_name="Challenge",
+            archetype="Spy Combo",
+            finish_rank=2,
+            reason="diff",
+            score=1.0,
+            deck_url="https://www.mtggoldfish.com/deck/8030276",
+            link_source="goldfish-deck",
+        )
+        line = _fmt_distinctive_line(flag, include_link=True)
+        self.assertEqual(
+            line,
+            "- TomJubarte — [Spy Combo](https://www.mtggoldfish.com/deck/8030276) #2",
+        )
+        self.assertNotIn("リンク:", line)
+        self.assertNotIn("<https://", line)
+
+    def test_no_goldfish_stays_plain(self) -> None:
+        from pauper_meta.discord_summary import _fmt_distinctive_line
+        from pauper_meta.distinctive import DistinctiveFlag
+
+        flag = DistinctiveFlag(
+            deck_id="d2",
+            player="Bob",
+            event_id="e1",
+            event_name="Challenge",
+            archetype="Elves",
+            finish_rank=9,
+            reason="diff",
+            score=1.0,
+            deck_url="https://www.mtgo.com/decklist/x/#decklistDecks",
+            link_source="mtgo-event",
+        )
+        line = _fmt_distinctive_line(flag, include_link=True)
+        self.assertEqual(line, "- Bob — Elves #9")
+        self.assertNotIn("](", line)
+
+    def test_omit_links_keeps_plain_name(self) -> None:
+        from pauper_meta.discord_summary import _fmt_distinctive_line
+        from pauper_meta.distinctive import DistinctiveFlag
+
+        flag = DistinctiveFlag(
+            deck_id="d3",
+            player="Alice",
+            event_id="e1",
+            event_name="Challenge",
+            archetype="Bogles",
+            finish_rank=3,
+            reason="diff",
+            score=1.0,
+            deck_url="https://www.mtggoldfish.com/deck/1",
+            link_source="goldfish-deck",
+        )
+        line = _fmt_distinctive_line(flag, include_link=False)
+        self.assertEqual(line, "- Alice — Bogles #3")
+
+
+class DiscordSummaryLinkShapeTests(unittest.TestCase):
+    def _sample_data(self):
+        from pauper_meta.distinctive import DistinctiveFlag
+        from pauper_meta.report_daily import (
+            ArchCount,
+            DailyReportData,
+            EventSummary,
+            Top8Entry,
+        )
+
+        deck = "https://www.mtgo.com/decklist/pauper-x/#deck_Alice"
+        gf = "https://www.mtggoldfish.com/deck/999"
+        return DailyReportData(
+            report_date="2026-11-04",
+            generated_at="2026-11-05T12:00:00+09:00",
+            events=[
+                EventSummary(
+                    event_id="e1",
+                    name="Pauper Challenge 32",
+                    event_type="challenge",
+                    start_time="2026-11-04 18:00:00.0",
+                    player_count=51,
+                    source_url="https://www.mtgo.com/decklist/pauper-x/",
+                    deck_count=32,
+                    top8_bracket=[
+                        Top8Entry("優勝", 1, "Alice", "Bogles", deck_url=deck),
+                        Top8Entry(
+                            "準優勝",
+                            2,
+                            "Bob",
+                            "Elves",
+                            eliminated_by="Alice（Bogles）",
+                            deck_url="https://www.mtgo.com/decklist/pauper-x/#deck_Bob",
+                        ),
+                    ],
+                )
+            ],
+            meta_overview=[ArchCount("Bogles", 4, 0.12, top8_count=1)],
+            month_dist=[],
+            week_dist=[],
+            distinctive=[
+                DistinctiveFlag(
+                    deck_id="d1",
+                    player="Carol",
+                    event_id="e1",
+                    event_name="Pauper Challenge 32",
+                    archetype="Spy Combo",
+                    finish_rank=5,
+                    reason="diff",
+                    score=1.0,
+                    deck_url=gf,
+                    link_source="goldfish-deck",
+                )
+            ],
+            report_stem="2026-11-04",
+            holding_date="2026-11-04",
+        )
+
+    def test_build_daily_embeds_links_in_names(self) -> None:
+        from pauper_meta.discord_summary import build_daily_summary
+
+        text = build_daily_summary(
+            self._sample_data(),
+            report_url="https://example.test/report.md",
+        )
+        self.assertIn(
+            "- 優勝: Alice — [Bogles](https://www.mtgo.com/decklist/pauper-x/#deck_Alice)",
+            text,
+        )
+        self.assertIn(
+            "- 準優勝: Bob — [Elves](https://www.mtgo.com/decklist/pauper-x/#deck_Bob)"
+            "（Aliceに敗北）",
+            text,
+        )
+        self.assertIn(
+            "- Carol — [Spy Combo](https://www.mtggoldfish.com/deck/999) #5",
+            text,
+        )
+        self.assertNotIn("[リスト]", text)
+        self.assertNotIn("<https://www.mtggoldfish.com", text)
+
+    def test_budget_drops_distinctive_links_first(self) -> None:
+        from pauper_meta.discord_summary import _build_daily_summary_body
+
+        data = self._sample_data()
+        plain = _build_daily_summary_body(
+            data,
+            report_url="https://example.test/report.md",
+            top8_links="per-deck",
+            distinctive_links=False,
+            meta_top_n=8,
+        )
+        self.assertIn(
+            "- 優勝: Alice — [Bogles](https://www.mtgo.com/decklist/pauper-x/#deck_Alice)",
+            plain,
+        )
+        self.assertIn("- Carol — Spy Combo #5", plain)
+        self.assertNotIn("mtggoldfish.com/deck/999", plain)
 
 
 class GithubTop8LinkTests(unittest.TestCase):
