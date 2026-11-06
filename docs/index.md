@@ -9,6 +9,7 @@ Magic Online の Pauper Challenge / Preliminary 日次レポートです。
 
 | 開催日 | レポート |
 |---|---|
+| 2026-11-04 | [Pauper Challenge 16 — 2026-11-04（MTGO）](daily/2026-11-04.html) |
 | 2026-11-03 | [Pauper Challenge 16 — 2026-11-03（MTGO）](daily/2026-11-03.html) |
 | 2026-11-02 | [Pauper Challenge 32 — 2026-11-02（MTGO）](daily/2026-11-02.html) |
 | 2026-11-01 | [Pauper Challenge 32 — 2026-11-01（MTGO）](daily/2026-11-01.html) |
@@ -39,6 +40,7 @@ Magic Online の Pauper Challenge / Preliminary 日次レポートです。
 | 2026-09-26 | [Pauper Challenge 16 — 2026-09-26（MTGO）](daily/2026-09-26.html) |
 | 2026-09-22 | [Pauper Challenge 16 — 2026-09-22（MTGO）](daily/2026-09-22.html) |
 | 2026-09-21 | [Pauper Challenge 32 — 2026-09-21（MTGO）](daily/2026-09-21.html) |
+| 2026-09-20 | [Pauper Challenge 32 — 2026-09-20（MTGO）](daily/2026-09-20.html) |
 | 2026-07-03 | [Pauper Challenge 32 — 2026-07-03（MTGO）](daily/2026-07-03.html) |
 | 2026-07-02 | [Pauper Challenge 32 — 2026-07-02（MTGO）](daily/2026-07-02.html) |
 | 2026-06-28 | [Pauper Challenge 32 — 2026-06-28（MTGO）](daily/2026-06-28.html) |
