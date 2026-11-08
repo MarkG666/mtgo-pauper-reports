@@ -151,9 +151,14 @@ SIGNATURES: list[tuple[str, list[tuple[str, int]]]] = [
             ("Llanowar Augur", 3),
         ],
     ),
+    # Terror family base score (color via _resolve_terror_family).
+    # Mono-U (Cryptic Serpent) stays U Terror; Gurmag / black removal → UB Terror.
+    # Sneaky Snacker alone does not rename (global color exclusion).
     (
         "U Terror",
         [
+            ("Tolarian Terror", 4),
+            ("Cryptic Serpent", 3),
             ("Gurmag Angler", 3),
             ("Snuff Out", 2),
             ("Troll of Khazad-dum", 4),
@@ -215,6 +220,8 @@ SIGNATURES: list[tuple[str, list[tuple[str, int]]]] = [
             ("Jaspera Sentinel", 2),
         ],
     ),
+    # True Gates / Caw package only. Squadron Hawk alone must not win:
+    # Boros Tribe (Tireless Tribe + Inside Out) and WW Screech also run Hawk.
     (
         "Caw-Gates",
         [
@@ -225,6 +232,20 @@ SIGNATURES: list[tuple[str, list[tuple[str, int]]]] = [
             ("Sacred Cat", 3),
             ("Guardian of the Guildpact", 3),
             ("Prismari Command", 2),
+        ],
+    ),
+    # Boros Tribe: Tireless Tribe + Inside Out combo (not Caw-Gates, not Madness loot).
+    (
+        "Boros Tribe",
+        [
+            ("Tireless Tribe", 5),
+            ("Inside Out", 5),
+            ("Thrilling Discovery", 3),
+            ("Pursue the Past", 3),
+            ("Spirit Mascot", 2),
+            ("Aurora Eidolon", 2),
+            ("Battle Screech", 2),
+            ("Faithless Looting", 2),
         ],
     ),
     (
@@ -805,6 +826,53 @@ def _is_madness_name(name: str) -> bool:
     return name in _MADNESS_FAMILY or name.endswith(" Madness")
 
 
+# Terror color naming (mainboard). Gurmag and/or black removal → UB Terror.
+# Sneaky Snacker alone does not count (global exclusion). Dual lands alone do not.
+_TERROR_BLACK_SPLASH = frozenset(
+    {
+        "Gurmag Angler",
+        "Snuff Out",
+        "Cast Down",
+        "Cut Down",
+        "Suffocating Fumes",
+        "Unexpected Fangs",
+        "Agony Warp",
+        "Defile",
+        "Echoing Decay",
+        "Extract a Confession",
+        "Arms of Hadar",
+        "Thorn of the Black Rose",
+        "Chainer's Edict",
+        "Doom Blade",
+        "Tragic Slip",
+        "Disfigure",
+        "Vendetta",
+        "Go for the Throat",
+        "Eliminate",
+        "Feed the Swarm",
+        "Duress",
+        "Okiba-Gang Shinobi",
+        "Dihada's Ploy",
+    }
+)
+_TERROR_FAMILY = frozenset({"U Terror", "UB Terror"})
+
+
+# Gate lands required for Caw-Gates (Hawk alone is not enough).
+_CAW_GATE_LANDS = frozenset(
+    {
+        "Basilisk Gate",
+        "Citadel Gate",
+        "Heap Gate",
+        "Cliffgate",
+        "Sea Gate",
+        "Manor Gate",
+        "Black Dragon Gate",
+        "Gond Gate",
+    }
+)
+
+
 @dataclass
 class Classification:
     archetype: str
@@ -1105,8 +1173,26 @@ def _resolve_affinity_family(counts: Counter[str], best_name: str, scores: list[
     return "Unknown"
 
 
+def _inside_out_count(counts: Counter[str]) -> int:
+    """Inside Out / Turn Inside Out (裏返し) combo pieces."""
+    return counts.get("Inside Out", 0) + counts.get("Turn Inside Out", 0)
+
+
+def _is_boros_tribe_core(counts: Counter[str]) -> bool:
+    """Tireless Tribe + Inside Out combo — not a Gates deck, not generic Madness loot."""
+    return counts.get("Tireless Tribe", 0) >= 3 and _inside_out_count(counts) >= 3
+
+
+def _is_caw_gates_core(counts: Counter[str]) -> bool:
+    """Actual Gate-land package (Basilisk/Citadel/Heap/…). Hawk alone is insufficient."""
+    return sum(counts.get(name, 0) for name in _CAW_GATE_LANDS) >= 3
+
+
 def _is_madness_core(counts: Counter[str]) -> bool:
     """Loot package with Madness payoffs (Temper / Imp / Kiss / Tribe / Epicure)."""
+    # Tribe + Inside Out is Boros Tribe, not Madness (handled upstream).
+    if _is_boros_tribe_core(counts):
+        return False
     loot = (
         counts.get("Grab the Prize", 0)
         + counts.get("Highway Robbery", 0)
@@ -1121,7 +1207,7 @@ def _is_madness_core(counts: Counter[str]) -> bool:
     tribe = counts.get("Tireless Tribe", 0)
     discovery = counts.get("Thrilling Discovery", 0) + counts.get("Pursue the Past", 0)
     epicure_snacker = counts.get("Voldaren Epicure", 0) + counts.get("Sneaky Snacker", 0)
-    # Boros Tribe shell often runs Faithless-only loot (no Grab/Highway).
+    # White Tribe loot without Inside Out still counts as Madness (→ Boros Madness).
     if tribe >= 2 and (discovery + counts.get("Faithless Looting", 0)) >= 4:
         return True
     if loot >= 3 and (temper + rakdos + epicure_snacker + tribe) >= 4:
@@ -1136,7 +1222,10 @@ def _madness_variant_name(counts: Counter[str]) -> str:
 
     Sneaky Snacker / Vandalblast alone do not add a color. Twinned Vision /
     Inside Out do not add blue (loot filters used in Mono-Red and Boros shells).
+    Tireless Tribe + Inside Out is Boros Tribe (not Boros Madness).
     """
+    if _is_boros_tribe_core(counts):
+        return "Boros Tribe"
     has_b = _has_splash(counts, _MADNESS_BLACK_SPLASH)
     has_w = _has_splash(counts, _MADNESS_WHITE_SPLASH)
     has_g = _has_splash(counts, _MADNESS_GREEN_SPLASH)
@@ -1156,6 +1245,10 @@ def _madness_variant_name(counts: Counter[str]) -> str:
 
 def _resolve_madness_family(counts: Counter[str], best_name: str, scores: list[tuple[str, int]]) -> str:
     """Color-split Madness when the signature already won (do not steal Burn etc.)."""
+    if _is_boros_tribe_core(counts) and (
+        _is_madness_name(best_name) or best_name in ("Boros Tribe", "Caw-Gates", "Burn")
+    ):
+        return "Boros Tribe"
     if not _is_madness_name(best_name):
         return best_name
     if _is_madness_core(counts):
@@ -1164,6 +1257,50 @@ def _resolve_madness_family(counts: Counter[str], best_name: str, scores: list[t
         if not _is_madness_name(name) and score >= 8:
             return name
     return "Unknown"
+
+
+def _resolve_boros_tribe(
+    counts: Counter[str], best_name: str, scores: list[tuple[str, int]]
+) -> str:
+    """Promote Tireless Tribe + Inside Out over Caw-Gates / Madness mislabels."""
+    if _is_boros_tribe_core(counts):
+        return "Boros Tribe"
+    if best_name == "Boros Tribe":
+        for name, score in scores:
+            if name != "Boros Tribe" and score >= 8:
+                return name
+        return "Unknown"
+    return best_name
+
+
+def _resolve_caw_gates(
+    counts: Counter[str], best_name: str, scores: list[tuple[str, int]]
+) -> str:
+    """Keep Caw-Gates only with Gate lands; otherwise fall through."""
+    if best_name != "Caw-Gates":
+        return best_name
+    if _is_caw_gates_core(counts):
+        return "Caw-Gates"
+    for name, score in scores:
+        if name != "Caw-Gates" and score >= 8:
+            return name
+    return "Unknown"
+
+
+def _terror_variant_name(counts: Counter[str]) -> str:
+    """U Terror vs UB Terror by Gurmag / black removal (Snacker alone stays U)."""
+    if _has_splash(counts, _TERROR_BLACK_SPLASH):
+        return "UB Terror"
+    return "U Terror"
+
+
+def _resolve_terror_family(
+    counts: Counter[str], best_name: str, scores: list[tuple[str, int]]
+) -> str:
+    """Color-split Terror when the signature (or Terror family) already won."""
+    if best_name not in _TERROR_FAMILY:
+        return best_name
+    return _terror_variant_name(counts)
 
 
 def _is_ephemerate_core(counts: Counter[str]) -> bool:
@@ -1218,6 +1355,12 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
         # Turbo Fog only scores with Moment's Peace + fog density (not WtS-only).
         if name == "Turbo Fog" and not _is_turbo_fog_core(counts):
             continue
+        # Caw-Gates only with Gate lands (Hawk / Tribe shells must not win on Hawk alone).
+        if name == "Caw-Gates" and not _is_caw_gates_core(counts):
+            continue
+        # Boros Tribe only with Tireless Tribe + Inside Out combo.
+        if name == "Boros Tribe" and not _is_boros_tribe_core(counts):
+            continue
         score = 0
         for card, weight in sigs:
             qty = counts.get(card, 0)
@@ -1247,6 +1390,11 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
             return Classification(
                 archetype="Cycle Storm", score=max(cycle_score, 8), runners_up=scores[:3]
             )
+        if _is_boros_tribe_core(counts):
+            tribe_score = next((s for n, s in scores if n == "Boros Tribe"), 0)
+            return Classification(
+                archetype="Boros Tribe", score=max(tribe_score, 8), runners_up=scores[:3]
+            )
         if _is_faeries_core(counts):
             name = _faeries_variant_name(counts)
             fairy_score = max(
@@ -1266,7 +1414,9 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     best_name, best_score = scores[0]
     # Promote Sprite packages that scored as Control/Terror into Faeries family
     # (final Dimir/Izzet/Mono-Blue/Grixis name comes from _resolve_faeries_family).
-    if best_name in ("Dimir Control", "U Terror") and counts.get("Spellstutter Sprite", 0) >= 2:
+    if best_name in ("Dimir Control", "U Terror", "UB Terror") and counts.get(
+        "Spellstutter Sprite", 0
+    ) >= 2:
         best_name = "Dimir Faeries"
     # BUW Ephemerate bounce that scored as Dimir Control (e.g. Brvnx 2026-09-21).
     if best_name == "Dimir Control" and _is_ephemerate_core(counts):
@@ -1282,8 +1432,12 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     best_name = _resolve_faeries_family(counts, best_name, scores)
     # After Faeries demotion may land on Affinity signature — apply color name / core gate.
     best_name = _resolve_affinity_family(counts, best_name, scores)
+    # Tribe before Madness/Caw so Inside Out Boros packages do not stay mislabeled.
+    best_name = _resolve_boros_tribe(counts, best_name, scores)
+    best_name = _resolve_caw_gates(counts, best_name, scores)
     best_name = _resolve_madness_family(counts, best_name, scores)
     best_name = _resolve_ephemerate_family(counts, best_name, scores)
+    best_name = _resolve_terror_family(counts, best_name, scores)
     return Classification(archetype=best_name, score=best_score, runners_up=scores[1:4])
 
 

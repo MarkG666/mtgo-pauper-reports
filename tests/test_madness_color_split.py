@@ -46,7 +46,8 @@ def test_rakdos_madness_kitchen_imp_package() -> None:
     assert result.archetype == "Rakdos Madness"
 
 
-def test_boros_madness_tireless_tribe() -> None:
+def test_boros_madness_tireless_tribe_without_inside_out() -> None:
+    """White Tribe loot without Inside Out stays Boros Madness (not Boros Tribe)."""
     result = classify_deck(
         Counter(
             {
@@ -64,6 +65,27 @@ def test_boros_madness_tireless_tribe() -> None:
         )
     )
     assert result.archetype == "Boros Madness"
+
+
+def test_boros_tribe_inside_out_not_madness() -> None:
+    result = classify_deck(
+        Counter(
+            {
+                "Tireless Tribe": 4,
+                "Inside Out": 4,
+                "Thrilling Discovery": 4,
+                "Pursue the Past": 4,
+                "Faithless Looting": 4,
+                "Sneaky Snacker": 4,
+                "Lightning Bolt": 4,
+                "Aurora Eidolon": 4,
+                "Spirit Mascot": 4,
+                "Mountain": 4,
+                "Plains": 4,
+            }
+        )
+    )
+    assert result.archetype == "Boros Tribe"
 
 
 def test_twinned_vision_does_not_make_izzet() -> None:
