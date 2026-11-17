@@ -9,12 +9,21 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
-from pauper_meta.fetch_mtgo import MtgoFetcher
+from pauper_meta.fetch_mtgo import (
+    FETCH_RETRY_BACKOFF,
+    FETCH_RETRY_DELAY_SEC,
+    MtgoFetcher,
+)
 from pauper_meta.ingest import run_ingest
 from pauper_meta.ingest_pending import is_retryable_error
 
 
 class FetchRetryTests(unittest.TestCase):
+    def test_listing_retry_spacing_is_minute_scale(self) -> None:
+        # ConnectTimeout recoveries need minutes between attempts, not ~20s.
+        self.assertGreaterEqual(FETCH_RETRY_DELAY_SEC, 60.0)
+        self.assertGreaterEqual(FETCH_RETRY_BACKOFF, 2.0)
+
     def test_connect_timeout_is_retryable_marker(self) -> None:
         self.assertTrue(is_retryable_error("ConnectTimeout: Connection to www.mtgo.com timed out"))
         self.assertTrue(
