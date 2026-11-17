@@ -40,10 +40,10 @@
 ## 運用
 
 - **本線:** GitHub Actions → Discord Webhook（案2）
-  - 米DST（EDT）: Discord 到着目安 **~13:00–14:00 JST**（cron `0 0 * * *` = 00:00 UTC）
-  - 米標準時（EST）: 到着目安 **~14:00–15:00 JST**（cron `0 1 * * *` = 01:00 UTC；金曜 Challenge 終了〜14:00 JST）
-  - cron は 00:00/01:00 UTC 両方＋`schedule_gate`（`America/New_York`）。Actions ~4.5–5h 遅延を見込んだ前倒し
-- 週次ダイジェスト: 月曜・日次の **+30分**（00:30 / 01:30 UTC）
+  - 米DST（EDT）: Discord 到着目安 **~13:00–14:00 JST**（cron `0 22 * * *` = 22:00 UTC）
+  - 米標準時（EST）: 到着目安 **~14:00–15:00 JST**（cron `0 23 * * *` = 23:00 UTC；金曜 Challenge 終了〜14:00 JST）
+  - cron は 22:00/23:00 UTC 両方＋`schedule_gate`（`America/New_York`）。Actions ~6.5h 遅延を見込んだ前倒し（2026-11）
+- 週次ダイジェスト: 月曜・日次の **+30分**（22:30 / 23:30 UTC）
 - 前日キャッチアップ: 不完全イベント or 欠落 md なら JST 昨日を再取得（Discord は `data/discord_posted.json` で重複防止）
 - 手順: [SETUP.md](./SETUP.md)
 - 任意のローカル: Windows タスクスケジューラ（13:00 JST 目安）→ `run-daily.bat`

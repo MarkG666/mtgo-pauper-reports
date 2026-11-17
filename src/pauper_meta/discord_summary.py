@@ -366,11 +366,12 @@ def resolve_alert_webhook_url(explicit: str | None = None) -> str | None:
     return env or None
 
 
-def recent_daily_stems(*, days: int = 5, as_of: date | None = None) -> list[str]:
+def recent_daily_stems(*, days: int = 7, as_of: date | None = None) -> list[str]:
     """Per-event report stems for today and the previous ``days-1`` JST days.
 
-    Default 5 days so a weekend ingest miss can still Discord-post after the
-    next weekday run (without waiting for a manual dispatch).
+    Default 7 days so multi-day listing ConnectTimeout streaks can still
+    Discord-post missed holding dates on the next successful ingest
+    (deduped via ``discord_posted.json``).
     """
     ensure_dirs()
     init_db()
