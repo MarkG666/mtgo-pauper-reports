@@ -22,9 +22,11 @@ MIN_DELAY_SEC = 1.5
 
 # Transient connect/read failures on mtgo.com (esp. listing) are common from
 # Actions runners. Retries here cover ConnectTimeout before ingest even starts.
+# Space attempts in *minutes*, not seconds — rapid retries rarely help when
+# mtgo.com is refusing connects from the runner network for a stretch.
 FETCH_RETRIES = 3  # extra attempts after the first
-FETCH_RETRY_DELAY_SEC = 20.0
-FETCH_RETRY_BACKOFF = 1.8
+FETCH_RETRY_DELAY_SEC = 60.0  # base wait: 1 min, then 2 min, then 4 min
+FETCH_RETRY_BACKOFF = 2.0
 
 
 def monthly_listing_url(year: int, month: int) -> str:
