@@ -59,12 +59,16 @@ def cmd_run_daily(args: argparse.Namespace) -> int:
         lookback=args.lookback,
         offline_listing=Path(args.offline_listing) if args.offline_listing else None,
     )
+    listing_errors = summary.get("listing_errors") or []
     logging.info(
-        "ingest done candidates=%s ingested=%s failed=%s",
+        "ingest done candidates=%s ingested=%s failed=%s listing_errors=%s",
         summary["candidates"],
         summary["ingested"],
         summary["failed"],
+        len(listing_errors),
     )
+    if listing_errors:
+        logging.warning("listing soft-errors: %s", listing_errors[:5])
     with db_session() as conn:
         apply_all(conn)
         written = write_reports_for_day(conn, report_date=today)
@@ -267,7 +271,12 @@ def build_parser() -> argparse.ArgumentParser:
         "run-daily",
         help="Ingest Challenge/Preliminary + write daily report (+ yesterday catch-up)",
     )
-    s.add_argument("--lookback", type=int, default=8, help="Max listing events to consider")
+    s.add_argument(
+        "--lookback",
+        type=int,
+        default=12,
+        help="Max listing events to consider (covers multi-day catch-up backlog)",
+    )
     s.add_argument("--max-events", type=int, default=None, help="Limit ingest count (smoke tests)")
     s.add_argument("--force", action="store_true", help="Refetch even if cache exists")
     s.add_argument("--offline-listing", type=str, default=None, help="Use local listing HTML")

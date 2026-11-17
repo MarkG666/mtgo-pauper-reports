@@ -346,6 +346,7 @@ def run_ingest(
     init_db(db_path)
     fetcher = fetcher or MtgoFetcher()
 
+    listing_errors: list[str] = []
     if offline_listing:
         html = offline_listing.read_text(encoding="utf-8", errors="replace")
         listing_path = offline_listing
@@ -354,8 +355,20 @@ def run_ingest(
         # Main Pauper filter page often shows only the newest month (sometimes
         # a single event). Also pull current + previous monthly listings so
         # lookback still covers last weekend when the landing page is thin.
-        html, listing_path = fetcher.fetch_listing(use_cache=False)
-        events = extract_listing_events(html)
+        #
+        # ConnectTimeout on the landing page used to abort the whole run-daily
+        # before catch-up. Soft-fail: try monthly pages / cache, then continue
+        # with whatever events we got (possibly empty) so catch-up still runs.
+        events = []
+        listing_path = fetcher.raw_dir / "listing-pauper.html"
+        try:
+            html, listing_path = fetcher.fetch_listing(use_cache=False)
+            events = extract_listing_events(html)
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc)
+            listing_errors.append(f"primary:{err}")
+            logger.warning("primary listing failed (continuing with monthly/cache): %s", exc)
+
         from datetime import date as _date
 
         today = _date.today()
@@ -369,6 +382,7 @@ def run_ingest(
                 mhtml, _mp = fetcher.fetch_monthly_listing(year, month, use_cache=False)
                 events = _merge_listing_events(events, extract_listing_events(mhtml))
             except Exception as exc:  # noqa: BLE001
+                listing_errors.append(f"monthly-{year:04d}-{month:02d}:{exc}")
                 logger.warning("monthly listing %04d-%02d failed: %s", year, month, exc)
 
     if lookback:
@@ -384,7 +398,21 @@ def run_ingest(
         "ingested": [],
         "skipped": [],
         "failed": [],
+        "listing_errors": listing_errors,
     }
+    if listing_errors and not events:
+        # Surface as a soft failure so cli can alert but still run catch-up.
+        summary["failed"].append(
+            {
+                "slug": "listing",
+                "url": "https://www.mtgo.com/decklists?filter=Pauper",
+                "event_id": None,
+                "error": "; ".join(listing_errors)[:500],
+            }
+        )
+        logger.error(
+            "listing produced zero events after errors; catch-up may still recover known days"
+        )
 
     for le in events:
         guessed_id = event_id_from_slug(le.slug)

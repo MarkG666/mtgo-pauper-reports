@@ -15,10 +15,10 @@ Magic Online の **Pauper Challenge** と **Preliminary** を毎日取得し、�
 | タイミング | 内容 |
 |------------|------|
 | 毎日 **~13:00–14:00 JST**（米DST=EDT期）／**~14:00–15:00 JST**（米標準時=EST期） | 取得・集計 → 前日キャッチアップ → DB/レポート commit → Discord **日次要約**（未投稿日のみ） |
-| 月曜・日次の **+30分** | Discord **週次ダイジェスト**（1ヵ月／直近1週＋前週差）。UTC cron は 00:30（EDT期）／01:30（EST期） |
+| 月曜・日次の **+30分** | Discord **週次ダイジェスト**（1ヵ月／直近1週＋前週差）。UTC cron は 22:30（EDT期）／23:30（EST期） |
 | 手動（Actions → Run workflow） | いつでも同じ処理を再実行可能（DSTゲートを bypass） |
 
-Cron は UTC **00:00** と **01:00** の両方に置く（Actions の ~4.5–5h 遅延を見込んだ前倒し）。`America/New_York` の夏時間判定で正しい枠だけ実行します。
+Cron は UTC **22:00** と **23:00** の両方に置く（Actions の ~6.5h 遅延を見込んだ前倒し；2026-11 実測）。`America/New_York` の夏時間判定で正しい枠だけ実行します。
 
 Discord には **大会ごとに1投稿**の短い要約を送ります。表つきの全文は GitHub の `reports/daily/YYYY-MM-DD.md`（MTGO 開催日）か、GitHub Pages の一覧（上記 URL）から読んでください。同じ開催日に稀に複数大会があるときだけ `-1` / `-2`。
 

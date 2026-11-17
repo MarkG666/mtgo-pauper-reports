@@ -255,13 +255,14 @@ def run_yesterday_catchup(
     lookback: int = 16,
     db_path: Path | None = None,
     fetcher: MtgoFetcher | None = None,
-    lookback_days: int = 3,
+    lookback_days: int = 5,
 ) -> CatchupResult:
-    """Re-ingest / regenerate recent incomplete JST days (default: yesterday + 2).
+    """Re-ingest / regenerate recent incomplete JST days (default: yesterday + 4).
 
     Also force-retries ``data/ingest_pending.json`` entries (events that failed
     decklist parse and never landed decks). ``force=True`` always regenerates
-    yesterday even when complete.
+    yesterday even when complete. Wider than 3 days so multi-day listing
+    ConnectTimeout streaks still recover holding dates once mtgo.com responds.
     """
     ensure_dirs()
     init_db(db_path)
