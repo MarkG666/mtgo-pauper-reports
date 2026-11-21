@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 from collections import Counter, defaultdict
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .color_name_audit import audit_and_correct_event_decks
 from .colors import color_identity_from_cards, display_archetype
 from .distinctive import (
     DistinctiveFlag,
@@ -20,8 +22,11 @@ from .distinctive import (
     select_distinctive,
 )
 from .goldfish_links import event_page_url, get_resolver
+from .overrides import recompute_top8_dist_for_event
 from .parse_mtgo import mtgo_player_deck_url
 from .paths import CONFIG_DIR, PROJECT_ROOT, REPORTS_DIR, ensure_dirs
+
+_LOG = logging.getLogger(__name__)
 
 JST = ZoneInfo("Asia/Tokyo")
 
@@ -1049,6 +1054,18 @@ def build_report_data_for_event(
     """Build a report scoped to **one** Challenge/Preliminary event."""
     notes: list[str] = []
     ev_row = ev
+
+    # Pre-publish color-name audit (特徴 / Top8 / meta share the corrected labels).
+    event_id = ev_row["id"] if not isinstance(ev_row, dict) else ev_row["id"]
+    color_fixes = audit_and_correct_event_decks(conn, event_id, persist=True)
+    if color_fixes:
+        recompute_top8_dist_for_event(conn, event_id)
+        _LOG.info(
+            "color audit fixed %s deck(s) on event %s: %s",
+            len(color_fixes),
+            event_id,
+            ", ".join(f"{f.player}:{f.old_archetype}→{f.new_archetype}" for f in color_fixes[:8]),
+        )
 
     summary = _event_summary(conn, ev_row, notes, holding_date=holding_date)  # type: ignore[arg-type]
     event_summaries = [summary]

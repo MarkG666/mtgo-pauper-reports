@@ -38,6 +38,8 @@ SIGNATURES: list[tuple[str, list[tuple[str, int]]]] = [
             ("Archaeomancer", 2),
         ],
     ),
+    # Control family base score (color via _resolve_control_family).
+    # Counter/cantrip/Mystic shell; Dimir ≠ Izzet ≠ Grixis (black ≠ red).
     (
         "Dimir Control",
         [
@@ -509,6 +511,69 @@ _EPHEMERATE_BLACK_SPLASH = frozenset(
     }
 )
 _EPHEMERATE_FAMILY = frozenset({"Jeskai Ephemerate", "Esper Ephemerate"})
+
+# Control color naming (mainboard). Snacker / Vandalblast excluded via
+# _COLOR_NAMING_EXCLUSIONS. Twinned Vision alone must not add red (loot; same
+# spirit as Madness). Lands alone do not rename Dimir → Izzet.
+# Neither B nor R splash keeps Dimir Control (Mono-Blue High Tide etc. that
+# only hit the Control signature stay Dimir rather than inventing Mono-Blue Control).
+_CONTROL_BLACK_SPLASH = frozenset(
+    {
+        "Snuff Out",
+        "Cast Down",
+        "Gurmag Angler",
+        "Baleful Strix",
+        "Thorn of the Black Rose",
+        "Suffocating Fumes",
+        "Extract a Confession",
+        "Cut Down",
+        "Duress",
+        "Unexpected Fangs",
+        "Agony Warp",
+        "Arms of Hadar",
+        "Chainer's Edict",
+        "Echoing Decay",
+        "Tithing Blade",
+        "Okiba-Gang Shinobi",
+        "Blood Fountain",
+        "Terminate",
+        "Defile",
+        "Crypt Incursion",
+        "Drown in Sorrow",
+        "Nihil Spellbomb",
+        "Mukotai Ambusher",
+        "Accursed Marauder",
+    }
+)
+_CONTROL_RED_SPLASH = frozenset(
+    {
+        "Skred",
+        "Lightning Bolt",
+        "Crimson Fleet Commodore",
+        "Cast into the Fire",
+        "Galvanic Discharge",
+        "Suplex",
+        "Breath Weapon",
+        "Pyroblast",
+        "Red Elemental Blast",
+        "Fiery Cannonade",
+        "Electrickery",
+        "Gorilla Shaman",
+        "Lava Dart",
+        "Chain Lightning",
+        "Torch the Tower",
+        "Abrade",
+        "Sulfurous Blast",
+        "Terminate",
+        "Fire/Ice",
+        "Fire // Ice",
+        "Gut Shot",
+        "Oliphaunt",
+        "Seize the Storm",
+        # Twinned Vision intentionally omitted (loot; not a red splash signal).
+    }
+)
+_CONTROL_FAMILY = frozenset({"Dimir Control", "Izzet Control", "Grixis Control"})
 
 # Faeries color naming (mainboard). Snacker / Vandalblast excluded via
 # _COLOR_NAMING_EXCLUSIONS (and Vandalblast omitted from the red set below).
@@ -1339,6 +1404,34 @@ def _resolve_ephemerate_family(
     return "Jeskai Ephemerate"
 
 
+def _control_variant_name(counts: Counter[str]) -> str:
+    """Split Control by black/red identity cards (not by shared counter/Mystic core).
+
+    - black only → Dimir Control
+    - red only → Izzet Control
+    - both → Grixis Control
+    - neither → Dimir Control (default; avoids renaming High Tide false positives)
+    """
+    has_b = _has_splash(counts, _CONTROL_BLACK_SPLASH)
+    has_r = _has_splash(counts, _CONTROL_RED_SPLASH)
+    if has_b and has_r:
+        return "Grixis Control"
+    if has_b:
+        return "Dimir Control"
+    if has_r:
+        return "Izzet Control"
+    return "Dimir Control"
+
+
+def _resolve_control_family(
+    counts: Counter[str], best_name: str, scores: list[tuple[str, int]]
+) -> str:
+    """Apply color-split Control names when the Control signature already won."""
+    if best_name not in _CONTROL_FAMILY:
+        return best_name
+    return _control_variant_name(counts)
+
+
 def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     counts = Counter(main)
     scores: list[tuple[str, int]] = []
@@ -1414,12 +1507,12 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     best_name, best_score = scores[0]
     # Promote Sprite packages that scored as Control/Terror into Faeries family
     # (final Dimir/Izzet/Mono-Blue/Grixis name comes from _resolve_faeries_family).
-    if best_name in ("Dimir Control", "U Terror", "UB Terror") and counts.get(
+    if best_name in _CONTROL_FAMILY | {"U Terror", "UB Terror"} and counts.get(
         "Spellstutter Sprite", 0
     ) >= 2:
         best_name = "Dimir Faeries"
     # BUW Ephemerate bounce that scored as Dimir Control (e.g. Brvnx 2026-09-21).
-    if best_name == "Dimir Control" and _is_ephemerate_core(counts):
+    if best_name in _CONTROL_FAMILY and _is_ephemerate_core(counts):
         best_name = "Jeskai Ephemerate"
     if best_name == "Burn" and counts.get("Grab the Prize", 0) + counts.get("Sneaky Snacker", 0) >= 3:
         best_name = "Mono-Red Madness"
@@ -1438,6 +1531,8 @@ def classify_deck(main: Counter[str] | dict[str, int]) -> Classification:
     best_name = _resolve_madness_family(counts, best_name, scores)
     best_name = _resolve_ephemerate_family(counts, best_name, scores)
     best_name = _resolve_terror_family(counts, best_name, scores)
+    # Control last among color-split families so Ephemerate/Faeries steals win first.
+    best_name = _resolve_control_family(counts, best_name, scores)
     return Classification(archetype=best_name, score=best_score, runners_up=scores[1:4])
 
 
