@@ -122,7 +122,18 @@ jobs:
 
       # Lookback HTML flakes (old events) make run-daily exit 2 AFTER writing today's
       # report. Still commit + Discord so a partial lookback miss cannot block delivery.
-      - name: Commit DB and reports
+      #
+      # Sync docs/ here (not only via sync-pages.yml): pushes that use GITHUB_TOKEN
+      # do not trigger other workflows, so a separate path-filter sync never runs
+      # after this job's report commit. Keep Pages current in the same push.
+      - name: Sync GitHub Pages docs from reports
+        if: >-
+          always() &&
+          steps.mode.outputs.run_daily == '1' &&
+          (steps.daily.outcome == 'success' || steps.daily.outcome == 'failure')
+        run: python scripts/sync_pages_daily.py
+
+      - name: Commit DB, reports, and Pages docs
         if: >-
           always() &&
           steps.mode.outputs.run_daily == '1' &&
@@ -130,13 +141,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/pauper.sqlite reports/ data/discord_posted.json data/ingest_pending.json
+          git add data/pauper.sqlite reports/ data/discord_posted.json data/ingest_pending.json \
+            docs/daily docs/meta docs/index.md
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
             git commit -m "chore: daily pauper update $(date -u +%Y-%m-%d)"
             git push
-            echo "Pushed DB + reports"
+            echo "Pushed DB + reports + Pages docs"
           fi
 
       - name: Discord daily summary (per-event; recent unposted; deduped)
