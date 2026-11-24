@@ -1,5 +1,10 @@
 # Keep docs/daily (GitHub Pages) in sync with reports/daily after main updates.
 # Source of truth: reports/daily/*.md — do not edit docs/daily by hand.
+#
+# Note: GITHUB_TOKEN pushes from Actions do NOT trigger this workflow's `push`
+# event (GitHub recursion guard). Pauper daily syncs docs in-job; this workflow
+# still covers human/PR pushes that touch reports/, plus a workflow_run safety
+# net after Pauper daily completes.
 name: Sync Pages daily docs
 
 on:
@@ -10,6 +15,11 @@ on:
       - "reports/meta/**"
       - "scripts/sync_pages_daily.py"
       - ".github/workflows/sync-pages.yml"
+  # Safety net: daily.yml commits with GITHUB_TOKEN never fire the push trigger.
+  workflow_run:
+    workflows: ["Pauper daily"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -21,10 +31,17 @@ concurrency:
 
 jobs:
   sync:
+    # Skip failed daily runs; still run for push / workflow_dispatch.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # workflow_run checks out this workflow's SHA by default; use main tip.
+          ref: main
 
       - name: Set up Python
         uses: actions/setup-python@v5
