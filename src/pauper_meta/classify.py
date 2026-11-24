@@ -470,8 +470,42 @@ _HAWK_GREEN_SPLASH = frozenset(
         "Ram Through",
     }
 )
+# Non-land red signals. Without these, black splash is Orzhov (WB), not Mardu (WRB).
+# Makeshift Munitions / Vandalblast alone must not invent red for naming
+# (Munitions is red but excluded here; Vandalblast is in _COLOR_NAMING_EXCLUSIONS).
+_HAWK_RED_SPLASH = frozenset(
+    {
+        "Galvanic Blast",
+        "Lightning Bolt",
+        "Experimental Synthesizer",
+        "Cleansing Wildfire",
+        "Krark-Clan Shaman",
+        "Torch the Tower",
+        "Melded Moxite",
+        "Pyroblast",
+        "Red Elemental Blast",
+        "Cast into the Fire",
+        "Gorilla Shaman",
+        "Breath Weapon",
+        "Chain Lightning",
+        "Lava Dart",
+        "Reckless Impulse",
+        "Wrenn's Resolve",
+        "Kuldotha Rebirth",
+        "Goblin Tomb Raider",
+        "Clockwork Percussionist",
+    }
+)
 _HAWK_FAMILY = frozenset(
-    {"Boros Hawk", "Mardu Hawk", "Jeskai Hawk", "4c Hawk", "Naya Hawk", "5c Hawk"}
+    {
+        "Boros Hawk",
+        "Orzhov Hawk",
+        "Mardu Hawk",
+        "Jeskai Hawk",
+        "4c Hawk",
+        "Naya Hawk",
+        "5c Hawk",
+    }
 )
 
 # Ephemerate color naming (mainboard). Snacker / Vandalblast excluded via
@@ -987,14 +1021,20 @@ def _is_hawk_core(counts: Counter[str]) -> bool:
 
 
 def _hawk_variant_name(counts: Counter[str]) -> str:
-    """Boros base; black → Mardu; blue → Jeskai; both → 4c; green → Naya/5c.
+    """White Hawk bounce; split by splash.
+
+    - no B/U/G → Boros Hawk (WR base assumed when red package present or default)
+    - black without red signals → Orzhov Hawk (WB)
+    - black with red signals → Mardu Hawk (WRB)
+    - blue → Jeskai Hawk; black+blue → 4c; green → Naya/5c
 
     Sneaky Snacker / Vandalblast alone do not add a color for naming.
-    Makeshift Munitions (red) is not a black splash signal.
+    Makeshift Munitions is not a black splash and does not count as Hawk red naming.
     """
     has_b = _has_splash(counts, _HAWK_BLACK_SPLASH)
     has_u = _has_splash(counts, _HAWK_BLUE_SPLASH)
     has_g = _has_splash(counts, _HAWK_GREEN_SPLASH)
+    has_r = _has_splash(counts, _HAWK_RED_SPLASH)
     if has_b and has_u and has_g:
         return "5c Hawk"
     if has_b and has_u:
@@ -1006,7 +1046,7 @@ def _hawk_variant_name(counts: Counter[str]) -> str:
     if has_g:
         return "Naya Hawk"
     if has_b:
-        return "Mardu Hawk"
+        return "Mardu Hawk" if has_r else "Orzhov Hawk"
     if has_u:
         return "Jeskai Hawk"
     return "Boros Hawk"
